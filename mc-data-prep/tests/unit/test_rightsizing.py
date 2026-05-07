@@ -1,5 +1,5 @@
 import unittest
-from rightsizing_engine import (
+from app.rightsizing_engine import (
     calculate_required_cores,
     rightsize_cores,
     rightsize_disk,
