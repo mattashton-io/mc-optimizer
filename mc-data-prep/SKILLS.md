@@ -23,6 +23,13 @@ Trigger automated TCO report generation in GCP Migration Center for pre-configur
 python3 app/tco_report_generator.py mc-report
 ```
 
+### 4. Data Ingestion & Transformation
+Transform raw VMware (RVTools) and Hyper-V exports into Migration Center CSV formats.
+```bash
+python3 app/data_transformer.py
+```
+*Note: This script iterates through `data/exports/` and outputs to `data/output/`.*
+
 ## Implementation Logic
 The rightsizing engine uses:
 - **Vapor Geomean Benchmarks:** Performance ratios for each GCE machine series.
