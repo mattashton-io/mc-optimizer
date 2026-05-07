@@ -1,0 +1,174 @@
+On-premises utilization, rightsizing and  
+VM mapping logic on MC & Airlift
+Author: Amit Boyarski Evya Edry
+Contributors:  Viacheslav Krakhotin, Piotr Papież
+Date: Aug 10, 2025
+Status: Under review
+
+On-premises utilization, 
+VM mapping logic on Airlift & MC, 
+and rightsizing in GCE	1
+TL;DR	1
+1. On-premises utilization	1
+2. VM shape mapping and rightsizing logic	3
+2.1 Quick estimate (Airlift)	3
+2.2 Detailed technical analysis (Migration Center)	4
+Specific VM example	4
+Planned/ considered logic optimizations	5
+Tracking rightsizing adoption on Cloud	6
+References:	6
+
+
+
+TL;DR
+
+
+1. On-premises utilization
+Analysis of 265K on-premise VMs  reveals that systems are, on average, significantly underutilized. This data, collected via the Migration Center Discovery Client (aka MCDC) from active customer and partner projects, provides a clear picture of typical enterprise environments. Both average and 95th percentile utilization for CPU and memory are low, indicating a substantial opportunity for cost savings through rightsizing upon migration to Google Cloud.
+Key utilization metrics:
+CPU utilization (95th Percentile Avg): 18% (n=265K)
+Memory utilization (95th Percentile Avg): 33% (n=265K)
+Disk capacity utilization (95th Percentile Avg): 39% (n=1,246K)
+These metrics confirm that most machines are over-provisioned relative to their actual performance needs, presenting a key opportunity for TCO reduction during cloud migration.
+2. VM shape mapping and rightsizing logic
+Two distinct journeys exist for sizing and mapping on-premise workloads to GCE, each serving a specific purpose within the sales and migration lifecycle. Despite their differences, both concepts share a common objective: to provide a cost-optimal target for the user, while trying to prioritize the promotion of new generation machines, factoring in cloud vapor benchmarking, SMT-off optimization where applicable, and other promotional defaults.  
+2.1 Detailed technical analysis (Migration Center)
+This methodology provides a more precise and granular assessment, making it suitable for detailed migration planning after initial proposals. It leverages the Migration Center Discovery Client (MCDC) to collect detailed performance and configuration data from each individual virtual machine.
+The includes the following stages
+ Use an improved detection of CPU details (vendor, model and frequency) to establish a performance benchmark score based on Passmark benchmarks and the GPA model. 
+If the CPU details are not discovered or failed to be matched by the model, the default benchmark performance score is set to 730, equivalent to N1 Skylake (more details).  
+Analyze the CPU and RAM required for the workload based on historical utilization data (e.g., average, p95th) and user-defined target utilization preferences.
+For storage, logic users the average disk utilization and applies a standard 25% uplift for headroom.
+Per each GCE available machine series, the “rightsized on-prem cores" and the “CPU performance score” are then used for calculating the required GCP cores on various supported GCE instance series using the he Passmark to GeoMean baseline as shown below
+
+ 
+The engine applies the Vapor Geomean benchmarks (implemented recently) ratio for each Compute Instance series, Geomean benchmark scores per series
+
+
+c2
+c2d
+c3
+c3d
+c4
+c4a
+c4d
+e2
+m1
+m2
+m3
+m4
+n1
+n2
+n2d
+n4
+t2a
+t2d
+Geomean
+1.41
+1.45
+2.02
+1.67
+2.43
+3.08
+3.05
+0.93
+0.88
+0.87
+1.28
+1.45
+1
+1.61
+1.20
+2.10
+1.27
+1.68
+
+
+For Windows VMs, if SMT-Off preference were applied these are taken into account. In vast majority of cases, these can cut by 50% the number of cores used for pricing the Windows Server PAYG license cost, however a 25% CPU compensation will be taken into account. 
+It then determines the minimum compatible disk settings (capacity, IOPS, throughput) and the minimum CPU and RAM needed to support them.
+For each machine series candidate the engine rounds up the required gcp cores to the next available instance shape.
+For each series selected shape, the engine calculates the CPU, RAM, storage and OS license cost, based on the desired region and pricing track (OD, 1yr/ 3r CUD)
+In case of Windows Servers,  the PAYG license price is also factored. 
+The engine selects the most cost-effective GCE instance. 
+Finally for each successfully* assessed source VM, the recommended instance types and price components are surfaced to users in the TCO/ Pricing  report. 
+There might be cases where source VMs were not assigned with a target instance (e.g: source VM is detected as Windows Desktop that should be hosted on S.T node)
+
+
+Mapping, sizing and instance recommending flow chart
+	Example for considering C4D for the below discovered VM
+
+
+
+Specific VM example detailed explanation
+	Parameters:  
+Source On prem VM: Intel(R) Xeon(R) Gold 6248 CPU @ 2.50GHz with 16 cores and 32 GiB RAM, 20 GB disk with 50% CPU utilization and 40% Disk utilization. 
+Required Region: US-Central-1
+Required price track: On-demand
+Source VM Passmark benchmark score:750
+Potential GCE Series candidate: C4D Turin
+C4D Turin Vapor Geomean score: 3.05 (N1 is Geomean baseline with score of 1).
+Passmark to Geomean baseline factor: 0.001390
+Default recommended disk type for C4D series: HyD Balanced
+ 
+Calculations:
+Based on formula above: C4D required cores: 16 x (750 / 3.05) * 0.00139 = 5.47
+
+RIghtsizing to 75% target utilization: (5.478x 0.5)/ 0.75 = 3.64 CPUs
+Rounding up to the next available shape accommodating required cores: C4D-Standard-4.
+Required disk size after right sizing = (20GB x 0.4 util @ source)/ 0.8 headroom factor = 10GB 
+US-Central-1 OD price for C4D-Standard-4 with 10GB HyD Balanced: 138.29$ per month.  
+This price will be compared with candidates for other instance series as N4, C4, N2, T2D etc.   
+See recently implemented and planned a BOM/ TCO optimization initiative here. 
+2.2 Quick estimate (Airlift)
+This approach is designed for internal sales teams to quickly generate GCE proposals without needing to deploy MCDC or collect highly granular performance data from the customer's environment. The key difference is that calculations are performed on aggregated data inputs (e.g., total source vCPUs, total memory, total storage) rather than on a per-VM basis, and some sophisticated compatibility requirements are waived by design (e.g., high disk throughput requiring a machine with more than 32 vCPUs would not be enforced and presented to the user in the initial phase).
+The logic focuses on a top-down calculation to determine the required number of GCE instances. 
+This model incorporates several key factors:
+Source Capacity: The total vCPUs and Memory from the on-premise environment.
+Rightsizing Factor: An adjustment to match the actual resource consumption.
+Headroom and Uptime: Buffers for growth and adjustments for non-24/7 workloads.
+Cloud Vapor Benchmarking Factor: Accounts for the superior performance of newer GCE machine types compared to older on-premise hardware, often allowing fewer vCPUs to handle the same workload.
+To streamline this process, the Airlift quick estimator is pre-filled with curated defaults based on the data analysis of 65k assets. For example, the default rightsizing factors for CPU and Memory are populated with the average 95th percentile utilization values (22.70% for CPU and 35.72% for memory). This provides a data-driven starting point for the estimate, while still giving the user full flexibility to adjust and override these defaults as they see fit (rightsizing factors for vCPU and Memory, idle machines %, required headroom %, SMT On/Off for Windows machines, use vapor benchmarking factor, source machine type normalization, and also storage user related preferences).
+AI Diagram: Airlift Quick Estimate Calculation Flow
+This flowchart illustrates the top-down calculation process for the Airlift quick estimate, showing how aggregated source data is adjusted by various factors like rightsizing, headroom, and vapor benchmarking to generate a GCE proposal.
+
+Tracking rightsizing adoption on Cloud
+Common qualitative feedback and planning spreadsheets (ref1, ref2) from field teams (CEs, PSO) indicate that customers are hesitant to rightsize during migration due to concerns about risk reduction and stability, often opting for "like-for-like" VM shape mapping.
+
+A review of GCE Instance utilization (specifically for Enterprise clients) supports this, showing that both CPU and Memory utilization in the cloud are similarly low as in on-premise VMs.
+
+
+GCE VMs:
+
+(source: Concept: Low cost compute for Enterprise Customers (June25))
+
+
+On-prem VMs:
+
+
+
+AI Diagram: Customer Cloud Migration and Rightsizing Decision Process
+This flowchart illustrates the common customer decision process during cloud migration, where concerns about risk often lead them to perform a 'like-for-like' migration instead of rightsizing, resulting in underutilized cloud resources.
+
+
+
+
+
+References: 
+BOM/ TCO optimization implemented and planned strategies
+Utilization for Airlift - Evya: Average metrics per obscured asset id from migration center utilization metrics and assets_ResultSnapshot_20250810_133701_20250810-133848 (_2da6a5a7_a7c8_4aa6_9639_ca3ddb5bd453)
+go/airlift-gce-reqs 
+VM processing logic in RE, simplified
+LOM Static Values
+Disks in RE
+go/re-selecting-candidates 
+go/re-new-vm-algorithm 
+PART 1 : Google Cloud Migrate Overview Video @ July 2025-8/7/2025, 1:42 PM.mp4
+Evya_copy | Currys Mon 25 Sep 2023 Migration GCP Scope (Working Sept Offer)
+Evya copy Greggs Summary pricing
+
+
+
+
+
+
+

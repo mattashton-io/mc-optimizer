@@ -1,0 +1,3 @@
+google-cloud-migrationcenter
+python-dotenv
+google-api-core
