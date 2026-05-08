@@ -24,6 +24,7 @@ from google.genai import types
 import os
 import google.auth
 from .data_prep import transform_infrastructure_data
+from .import_data import import_data_to_migration_center
 
 _, project_id = google.auth.default()
 os.environ["GOOGLE_CLOUD_PROJECT"] = project_id
@@ -71,12 +72,14 @@ root_agent = Agent(
         retry_options=types.HttpRetryOptions(attempts=3),
     ),
     instruction="""You are a GCP Migration Data Prep Agent. 
-Your goal is to help users prepare their on-premises workload data for Migration Center.
+Your goal is to help users prepare and import their on-premises workload data for Migration Center.
 You have access to tools for:
 1. Transforming raw infrastructure exports (VMware, Hyper-V) into MC-compliant CSV formats.
+2. Importing generated CSV files into Migration Center.
 
-Use the transform_infrastructure_data tool when asked to process or ingest CSV files from RVTools or Hyper-V.""",
-    tools=[get_weather, get_current_time, transform_infrastructure_data],
+Use the transform_infrastructure_data tool when asked to process or ingest CSV files from RVTools or Hyper-V.
+Use the import_data_to_migration_center tool when asked to upload or import the generated data to Migration Center.""",
+    tools=[get_weather, get_current_time, transform_infrastructure_data, import_data_to_migration_center],
 )
 
 app = App(

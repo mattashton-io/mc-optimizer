@@ -4,8 +4,8 @@ This roadmap tracks the tasks defined for the end-to-end Migration Center workfl
 
 ## Tasks
 ### TODOs
-- [ ] **2. Asset Migration & Management**
-  - [ ] Import data into the Migration Center.
-  - [ ] Manage assets (current approach avoids grouping/slicing for initial phases to keep reporting straightforward).
+- [x] **2. Asset Migration & Management**
+  - [x] Import data into the Migration Center.
+  - [x] Manage assets (current approach avoids grouping/slicing for initial phases to keep reporting straightforward).
 
 ### Future TODOs

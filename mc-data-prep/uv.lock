@@ -951,6 +951,22 @@ wheels = [
 ]
 
 [[package]]
+name = "google-cloud-migrationcenter"
+version = "0.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "google-api-core", extra = ["grpc"] },
+    { name = "google-auth" },
+    { name = "grpcio" },
+    { name = "proto-plus" },
+    { name = "protobuf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/91/94/6b21a6b599293a88b290fe2933613a1ba7bea82257acdd16bdb9278fcd79/google_cloud_migrationcenter-0.4.0.tar.gz", hash = "sha256:bb25b07ec9dac248f8cbc155a5c3bbfad6098d5ab9870f5bc7a246081092052f", size = 203672, upload-time = "2026-03-26T22:16:39.426Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/dd/5e/ddcb191cc783a008d08291704f2520b791a6e2cf6cd8581b9c11d03f0ee4/google_cloud_migrationcenter-0.4.0-py3-none-any.whl", hash = "sha256:bb4342d2ea514f230feef0c8d4a51ff8242f759a81484a5e752fa0c3f1eefbe2", size = 139247, upload-time = "2026-03-26T22:14:00.965Z" },
+]
+
+[[package]]
 name = "google-cloud-monitoring"
 version = "2.30.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1669,6 +1685,7 @@ dependencies = [
     { name = "gcsfs" },
     { name = "google-adk" },
     { name = "google-cloud-logging" },
+    { name = "google-cloud-migrationcenter" },
     { name = "opentelemetry-instrumentation-google-genai" },
     { name = "pandas" },
 ]
@@ -1697,6 +1714,7 @@ requires-dist = [
     { name = "google-adk", specifier = ">=1.15.0,<2.0.0" },
     { name = "google-adk", extras = ["eval"], marker = "extra == 'eval'", specifier = ">=1.15.0,<2.0.0" },
     { name = "google-cloud-logging", specifier = ">=3.12.0,<4.0.0" },
+    { name = "google-cloud-migrationcenter", specifier = ">=0.4.0" },
     { name = "opentelemetry-instrumentation-google-genai", specifier = ">=0.1.0,<1.0.0" },
     { name = "pandas", specifier = ">=2.0.0" },
     { name = "ruff", marker = "extra == 'lint'", specifier = ">=0.4.6,<1.0.0" },
