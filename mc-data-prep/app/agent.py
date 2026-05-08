@@ -23,7 +23,7 @@ from google.genai import types
 
 import os
 import google.auth
-from .rightsizing_engine import run_vm_assessment, run_airlift_estimate
+from .data_prep import transform_infrastructure_data
 
 _, project_id = google.auth.default()
 os.environ["GOOGLE_CLOUD_PROJECT"] = project_id
@@ -70,28 +70,13 @@ root_agent = Agent(
         model="gemini-flash-latest",
         retry_options=types.HttpRetryOptions(attempts=3),
     ),
-    instruction="""You are a GCP Migration Optimizer Agent. 
-Your goal is to help users rightsize their on-premises workloads and prepare data for Migration Center.
+    instruction="""You are a GCP Migration Data Prep Agent. 
+Your goal is to help users prepare their on-premises workload data for Migration Center.
 You have access to tools for:
-1. Detailed VM assessment and aggregate 'Airlift' estimates.
-2. Transforming raw infrastructure exports (VMware, Hyper-V) into MC-compliant CSV formats.
+1. Transforming raw infrastructure exports (VMware, Hyper-V) into MC-compliant CSV formats.
 
-Use the transform_infrastructure_data tool when asked to process or ingest CSV files from RVTools or Hyper-V.
-Use the assessment tool when given specific VM details (cores, RAM, disk, Passmark).
-Use the airlift tool for top-down, aggregated estimates of total infrastructure.
-Always recommend the most cost-effective machine series (e.g. C4D, N4).""",
-    tools=[get_weather, get_current_time, run_vm_assessment, run_airlift_estimate, transform_infrastructure_data],
-)
-
-app = App(
-    root_agent=root_agent,
-    name="app",
-)
- assessment and aggregate 'Airlift' estimates.
-Use the assessment tool when given specific VM details (cores, RAM, disk, Passmark).
-Use the airlift tool for top-down, aggregated estimates of total infrastructure.
-Always recommend the most cost-effective machine series (e.g. C4D, N4).""",
-    tools=[get_weather, get_current_time, run_vm_assessment, run_airlift_estimate],
+Use the transform_infrastructure_data tool when asked to process or ingest CSV files from RVTools or Hyper-V.""",
+    tools=[get_weather, get_current_time, transform_infrastructure_data],
 )
 
 app = App(

@@ -1,0 +1,9 @@
+- [x] **1. Data Ingestion & Wrangling (Agent 1: Ingestion/Wrangling)**
+  - [x] Collect customer server files from `mc-optimizer/mc-data-prep/data/exports`.
+  - [x] Map and transform customer data to match Migration Center upload templates in `mc-optimizer/mc-data-prep/data/templates`.
+    - [x] **REQUIRED**: Generate `vmInfo.csv` and `diskInfo.csv`.
+    - [ ] **OPTIONAL**: Generate `perfInfo.csv` and `tagInfo.csv` (Not enough data provided).
+  - [x] Ensure data prep abides by fields specified in [Migration Center Import Data Tables](https://docs.cloud.google.com/migration-center/docs/import-data-tables).
+  - [x] Identify and validate necessary fields in the customer data.
+  - [x] Perform unit conversions (e.g., standardizing units like GB/TB/MB).
+  - [x] Run a data integrity check (95-99% confidence level) to ensure the imported data accurately reflects original customer documents.
