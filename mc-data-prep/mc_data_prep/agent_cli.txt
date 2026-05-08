@@ -1,5 +1,0 @@
-1. Implement CPU benchmark and rightsizing formulas from rightsizing.txt.
-2. Implement 'Airlift' Quick Estimate logic for aggregate data.
-3. Add a CLI to tco_report_generator.py to support both Migration Center API reports and Airlift estimates.
-4. Add a test suite to verify the logic using the example in rightsizing.txt.
-5. Update SKILLS.md with instructions on how to use the new features.
