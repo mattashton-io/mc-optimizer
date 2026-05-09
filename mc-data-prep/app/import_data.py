@@ -35,8 +35,22 @@ def import_data_to_migration_center() -> str:
     job_id = f"manual-import-{int(time.time())}"
     
     parent = f"projects/{project_id}/locations/{location}"
+    print("Creating asset source...")
+    try:
+        source_id = f"source-{int(time.time())}"
+        source_op = client.create_source(
+            parent=parent,
+            source_id=source_id,
+            source={"display_name": f"Source {time.strftime('%Y%m%d-%H%M%S')}"}
+        )
+        source = source_op.result()
+        print(f"Asset source created: {source.name}")
+    except Exception as e:
+        return f"Failed to create asset source: {e}"
+
     import_job = {
-        "display_name": f"Manual Import {time.strftime('%Y%m%d-%H%M%S')}"
+        "display_name": f"Manual Import {time.strftime('%Y%m%d-%H%M%S')}",
+        "asset_source": source.name
     }
     request = migrationcenter_v1.CreateImportJobRequest(
         parent=parent,
@@ -100,4 +114,40 @@ def import_data_to_migration_center() -> str:
 
     if failed_files:
         return f"Import completed with failures. Uploaded: {uploaded_files}. Failed: {failed_files}"
-    return f"Successfully imported data to job {job_name}. Uploaded: {uploaded_files}"
+    
+    print(f"Validating import job {job_name}...")
+    try:
+        validate_op = client.validate_import_job(name=job_name)
+        print("Waiting for validation to complete...")
+        try:
+            validate_op.result()
+        except Exception as e:
+            print(f"Validation operation result error (expected if client fails to parse Empty): {e}")
+        
+        # Check state
+        job = client.get_import_job(name=job_name)
+        print(f"Job state after validation: {job.state}")
+        # Assuming 7 is READY
+        if job.state not in [7, 3]: # 7 is READY, 3 is COMPLETED
+             return f"Validation failed or job not ready. State: {job.state}"
+    except Exception as e:
+        return f"Validation failed: {e}"
+
+    print(f"Running import job {job_name}...")
+    try:
+        run_op = client.run_import_job(name=job_name)
+        print("Waiting for import job to complete...")
+        try:
+            run_op.result()
+        except Exception as e:
+            print(f"Run operation result error (expected if client fails to parse Empty): {e}")
+            
+        # Check state
+        job = client.get_import_job(name=job_name)
+        print(f"Job state after run: {job.state}")
+        if job.state != 3: # 3 is COMPLETED
+            return f"Run failed. State: {job.state}"
+    except Exception as e:
+        return f"Run failed: {e}"
+
+    return f"Successfully imported and processed data in job {job_name}. Uploaded: {uploaded_files}"
