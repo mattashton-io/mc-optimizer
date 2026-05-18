@@ -67,7 +67,7 @@ def import_data_to_migration_center() -> str:
     except Exception as e:
         return f"Failed to create import job: {e}"
 
-    files = ["vmInfo.csv", "diskInfo.csv"]
+    files = ["vmInfo.csv", "diskInfo.csv", "tagInfo.csv"]
     uploaded_files = []
     failed_files = []
 
@@ -115,18 +115,41 @@ def import_data_to_migration_center() -> str:
     if failed_files:
         return f"Import completed with failures. Uploaded: {uploaded_files}. Failed: {failed_files}"
     
+    def wait_for_job_state(job_name, target_states, transitioning_states):
+        while True:
+            job = client.get_import_job(name=job_name)
+            state = int(job.state)
+            if state in target_states:
+                return job
+            if state not in transitioning_states:
+                return job
+            print(f"Job state is {state}. Waiting...")
+            time.sleep(10)
+
     print(f"Validating import job {job_name}...")
     try:
-        validate_op = client.validate_import_job(name=job_name)
-        print("Waiting for validation to complete...")
-        try:
-            validate_op.result()
-        except Exception as e:
-            print(f"Validation operation result error (expected if client fails to parse Empty): {e}")
-        
-        # Check state
-        job = client.get_import_job(name=job_name)
+        client.validate_import_job(name=job_name)
+        print("Waiting for validation to complete (polling state)...")
+        # 5: VALIDATING, 7: READY, 6: FAILED_VALIDATION, 3: COMPLETED
+        job = wait_for_job_state(job_name, [7, 6, 3], [5, 1, 2])
         print(f"Job state after validation: {job.state}")
+        
+        if job.state in [4, 6]: # FAILED or FAILED_VALIDATION
+             report = job.validation_report
+             error_msgs = []
+             if report:
+                 if report.file_validations:
+                     for fv in report.file_validations:
+                         for err in fv.file_errors:
+                             error_msgs.append(f"File {fv.file_name}: {err.error_details}")
+                         for row_err in fv.row_errors:
+                             for err in row_err.errors:
+                                 error_msgs.append(f"File {fv.file_name} Row {row_err.row_number}: {err.error_details}")
+                 if hasattr(report, 'job_errors') and report.job_errors:
+                     for err in report.job_errors:
+                         error_msgs.append(f"Job: {err.error_details}")
+             return f"Validation failed with state {job.state}. Errors: {'; '.join(error_msgs[:10])}{'...' if len(error_msgs) > 10 else ''}"
+             
         # Assuming 7 is READY
         if job.state not in [7, 3]: # 7 is READY, 3 is COMPLETED
              return f"Validation failed or job not ready. State: {job.state}"
@@ -135,18 +158,18 @@ def import_data_to_migration_center() -> str:
 
     print(f"Running import job {job_name}...")
     try:
-        run_op = client.run_import_job(name=job_name)
-        print("Waiting for import job to complete...")
-        try:
-            run_op.result()
-        except Exception as e:
-            print(f"Run operation result error (expected if client fails to parse Empty): {e}")
-            
-        # Check state
-        job = client.get_import_job(name=job_name)
+        client.run_import_job(name=job_name)
+        print("Waiting for import job to complete (polling state)...")
+        # 2: RUNNING, 3: COMPLETED, 4: FAILED
+        job = wait_for_job_state(job_name, [3, 4], [2, 1])
         print(f"Job state after run: {job.state}")
         if job.state != 3: # 3 is COMPLETED
-            return f"Run failed. State: {job.state}"
+            report = job.execution_report
+            error_msgs = []
+            if report and report.execution_errors:
+                for err in report.execution_errors:
+                    error_msgs.append(f"{err.error_details}")
+            return f"Run failed. State: {job.state}. Errors: {'; '.join(error_msgs[:10])}"
     except Exception as e:
         return f"Run failed: {e}"
 
