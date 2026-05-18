@@ -13,7 +13,7 @@ def import_data_to_migration_center() -> str:
     Returns:
         A string indicating success or failure.
     """
-    OUTPUT_DIR = "data/output"
+    OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "data", "output")
     
     project_id = os.environ.get("GCP_PROJECT_ID")
     location = os.environ.get("GCP_LOCATION", "us-central1")

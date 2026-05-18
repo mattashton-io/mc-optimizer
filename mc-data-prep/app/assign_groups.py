@@ -5,13 +5,26 @@ import google.auth.transport.requests
 import requests
 from google.cloud import migrationcenter_v1
 
-def assign_assets_to_groups():
-    tag_file = "data/output/tagInfo.csv"
-    if not os.path.exists(tag_file):
-        print(f"Error: {tag_file} not found. Please run data prep first.")
-        return
+def assign_assets_to_groups() -> str:
+    """Assigns Migration Center assets to groups based on their source (VMware vs Hyper-V) as defined in tagInfo.csv.
+    
+    Returns:
+        A string summary of the execution log.
+    """
+    logs = []
+    def log(msg: str):
+        print(msg)
+        logs.append(msg)
 
-    df_tags = pd.read_csv(tag_file)
+    tag_file = os.path.join(os.path.dirname(__file__), "data", "output", "tagInfo.csv")
+        
+    if not os.path.exists(tag_file):
+        return f"Error: tagInfo.csv not found at {tag_file}. Please run data prep first."
+
+    try:
+        df_tags = pd.read_csv(tag_file)
+    except Exception as e:
+        return f"Error: Failed to read {tag_file}: {e}"
     
     project_id = os.environ.get("GCP_PROJECT_ID")
     location = os.environ.get("GCP_LOCATION", "us-central1")
@@ -20,62 +33,58 @@ def assign_assets_to_groups():
         try:
             _, project_id = google.auth.default()
         except Exception as e:
-            print(f"Failed to get project ID: {e}")
-            return
+            return f"Error: Failed to get default GCP project ID: {e}"
             
     if not project_id:
-        print("GCP_PROJECT_ID environment variable not set and could not be determined.")
-        return
+        return "Error: GCP_PROJECT_ID environment variable not set and could not be determined."
 
-    print(f"Using project: {project_id}, location: {location}")
+    log(f"Using project: {project_id}, location: {location}")
 
     # Get access token for REST API fallback
-    print("Getting access token...")
+    log("Getting access token...")
     try:
         credentials, _ = google.auth.default()
         credentials.refresh(google.auth.transport.requests.Request())
         token = credentials.token
     except Exception as e:
-        print(f"Failed to get access token: {e}")
-        return
+        return f"Error: Failed to get access token: {e}"
 
-    client = migrationcenter_v1.MigrationCenterClient()
-    parent = f"projects/{project_id}/locations/{location}"
-
-    groups = {
-        "vmware": "vmware-assets",
-        "hyperv": "hyperv-assets"
-    }
-
-    created_groups = {}
-
-    for key, group_id in groups.items():
-        group_name = f"{parent}/groups/{group_id}"
-        print(f"Checking if group {group_id} exists...")
-        try:
-            group = client.get_group(name=group_name)
-            print(f"Group {group_id} already exists.")
-            created_groups[key] = group_name
-        except Exception as e:
-            print(f"Group {group_id} not found or error. Attempting to create...")
-            try:
-                new_group = migrationcenter_v1.Group(display_name=group_id)
-                req = migrationcenter_v1.CreateGroupRequest(
-                    parent=parent,
-                    group=new_group,
-                    group_id=group_id
-                )
-                op = client.create_group(request=req)
-                res = op.result()
-                print(f"Group {group_id} created successfully: {res.name}")
-                created_groups[key] = res.name
-            except Exception as ce:
-                print(f"Failed to create group {group_id}: {ce}")
-                return
-
-    # List all assets
-    print("Listing assets...")
     try:
+        client = migrationcenter_v1.MigrationCenterClient()
+        parent = f"projects/{project_id}/locations/{location}"
+
+        groups = {
+            "vmware": "vmware-assets",
+            "hyperv": "hyperv-assets"
+        }
+
+        created_groups = {}
+
+        for key, group_id in groups.items():
+            group_name = f"{parent}/groups/{group_id}"
+            log(f"Checking if group {group_id} exists...")
+            try:
+                group = client.get_group(name=group_name)
+                log(f"Group {group_id} already exists.")
+                created_groups[key] = group_name
+            except Exception:
+                log(f"Group {group_id} not found. Attempting to create...")
+                try:
+                    new_group = migrationcenter_v1.Group(display_name=group_id)
+                    req = migrationcenter_v1.CreateGroupRequest(
+                        parent=parent,
+                        group=new_group,
+                        group_id=group_id
+                    )
+                    op = client.create_group(request=req)
+                    res = op.result()
+                    log(f"Group {group_id} created successfully: {res.name}")
+                    created_groups[key] = res.name
+                except Exception as ce:
+                    return f"Error: Failed to create group {group_id}: {ce}\nLogs so far:\n" + "\n".join(logs)
+
+        # List all assets
+        log("Listing assets from Migration Center...")
         assets = client.list_assets(parent=parent)
         
         vmware_assets = []
@@ -98,17 +107,16 @@ def assign_assets_to_groups():
                     break
                     
             if not matched:
-                # Only print if it doesn't look like a generated ID we know about
-                # to reduce noise
+                # Only print if it doesn't look like a generated ID we know about to reduce noise
                 if "uuid" not in asset.name and "hv-vm" not in asset.name:
-                     print(f"Could not match asset {asset.name} to any MachineId in tagInfo.csv")
+                     log(f"Could not match asset {asset.name} to any MachineId in tagInfo.csv")
 
         # Add assets to groups using REST API fallback
-        def add_assets(group_name, asset_list, group_label):
+        def add_assets(group_name, asset_list, group_label) -> str:
             if not asset_list:
-                print(f"No assets to add to {group_label}.")
-                return
-            print(f"Adding {len(asset_list)} assets to {group_label} group...")
+                log(f"No assets to add to {group_label}.")
+                return f"No assets to add to {group_label}."
+            log(f"Adding {len(asset_list)} assets to {group_label} group...")
             url = f"https://migrationcenter.googleapis.com/v1/{group_name}:addAssets"
             headers = {
                 "Authorization": f"Bearer {token}",
@@ -123,17 +131,27 @@ def assign_assets_to_groups():
             try:
                 resp = requests.post(url, headers=headers, json=body)
                 if resp.status_code == 200:
-                     print(f"Successfully added assets to {group_label} group.")
+                     log(f"Successfully added assets to {group_label} group.")
+                     return "Success"
                 else:
-                     print(f"Failed to add assets to {group_label} group: {resp.status_code} - {resp.text}")
+                     error_msg = f"Failed to add assets to {group_label} group: {resp.status_code} - {resp.text}"
+                     log(error_msg)
+                     return error_msg
             except Exception as e:
-                print(f"Failed to add assets to {group_label} group: {e}")
+                error_msg = f"Failed to add assets to {group_label} group: {e}"
+                log(error_msg)
+                return error_msg
 
-        add_assets(created_groups["vmware"], vmware_assets, "vmware-assets")
-        add_assets(created_groups["hyperv"], hyperv_assets, "hyperv-assets")
+        vmware_res = add_assets(created_groups["vmware"], vmware_assets, "vmware-assets")
+        hyperv_res = add_assets(created_groups["hyperv"], hyperv_assets, "hyperv-assets")
+        
+        if "Failed" in vmware_res or "Failed" in hyperv_res:
+            return "Completed with errors.\n" + "\n".join(logs)
+        
+        return "Successfully completed group assignment.\n" + "\n".join(logs)
                 
     except Exception as e:
-        print(f"Failed to list assets or process groups: {e}")
+        return f"Error: Failed to list assets or process groups: {e}\nLogs:\n" + "\n".join(logs)
 
 if __name__ == "__main__":
-    assign_assets_to_groups()
+    print(assign_assets_to_groups())

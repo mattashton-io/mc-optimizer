@@ -12,9 +12,10 @@ def transform_infrastructure_data() -> str:
     Returns:
         A string indicating success or failure.
     """
-    EXPORTS_DIR = "data/exports"
-    TEMPLATES_DIR = "data/templates"
-    OUTPUT_DIR = "data/output"
+    base_dir = os.path.join(os.path.dirname(__file__), "data")
+    EXPORTS_DIR = os.path.join(base_dir, "exports")
+    TEMPLATES_DIR = os.path.join(base_dir, "templates")
+    OUTPUT_DIR = os.path.join(base_dir, "output")
 
     # Ensure output dir exists
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -200,3 +201,88 @@ def transform_infrastructure_data() -> str:
         return f"Successfully generated files in {OUTPUT_DIR}"
     except Exception as e:
         return f"Failed to transform data: {str(e)}"
+
+
+def add_labels_to_tag_file(machine_ids: list[str], key: str, value: str) -> str:
+    """Adds or updates a label (key-value pair) for a list of machine IDs in the output tagInfo.csv.
+    It ensures the structure matches the template tagInfo.csv exactly (MachineId,Key,Value).
+    
+    Args:
+        machine_ids: A list of machine IDs to label.
+        key: The label key.
+        value: The label value.
+        
+    Returns:
+        A string indicating success or failure.
+    """
+    base_dir = os.path.join(os.path.dirname(__file__), "data")
+    template_path = os.path.join(base_dir, "templates", "tagInfo.csv")
+    output_path = os.path.join(base_dir, "output", "tagInfo.csv")
+
+    if not os.path.exists(template_path):
+        return f"Error: Template file {template_path} not found."
+
+    try:
+        # 1. Check template structure & get expected headers
+        template_df = pd.read_csv(template_path, nrows=0)
+        expected_headers = list(template_df.columns)
+    except Exception as e:
+        return f"Error: Failed to read template file: {e}"
+
+    # 2. Load existing tags or start new ones
+    if os.path.exists(output_path):
+        try:
+            tags_df = pd.read_csv(output_path)
+        except Exception as e:
+            return f"Error: Failed to read existing tagInfo.csv: {e}"
+    else:
+        tags_df = pd.DataFrame(columns=expected_headers)
+
+    # 3. Process and add new rows
+    new_rows = []
+    for mid in machine_ids:
+        # Ensure we clear out any existing matching key/value pairs for this machine ID to avoid duplicates
+        if not tags_df.empty:
+            tags_df = tags_df[~((tags_df["MachineId"] == mid) & (tags_df["Key"] == key))]
+            
+        new_rows.append({
+            "MachineId": mid,
+            "Key": key,
+            "Value": value
+        })
+
+    if new_rows:
+        new_df = pd.DataFrame(new_rows)
+        # Align headers exactly with template
+        new_df = new_df[expected_headers]
+        tags_df = pd.concat([tags_df, new_df], ignore_index=True)
+
+    # 4. Write back to file
+    try:
+        # Ensure output directory exists
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        tags_df.to_csv(output_path, index=False)
+        return f"Successfully added/updated label '{key}={value}' for {len(machine_ids)} servers in {output_path}."
+    except Exception as e:
+        return f"Error: Failed to save tagInfo.csv: {e}"
+
+
+def get_parsed_vms() -> str:
+    """Retrieves the list of parsed VMs from the generated vmInfo.csv.
+    This contains VM IDs, names, OS types, and machine types to help map VMs to MachineIds.
+    
+    Returns:
+        A CSV-formatted string or error message.
+    """
+    vm_path = os.path.join(os.path.dirname(__file__), "data", "output", "vmInfo.csv")
+
+    if not os.path.exists(vm_path):
+        return "Error: No parsed VMs found in data/output/vmInfo.csv. Please run transform_infrastructure_data first."
+
+    try:
+        df = pd.read_csv(vm_path)
+        cols = ["MachineId", "MachineName", "OsType(optional)", "MachineTypeLabel(optional)"]
+        cols = [c for c in cols if c in df.columns]
+        return df[cols].to_csv(index=False)
+    except Exception as e:
+        return f"Error: Failed to read VM list: {e}"
