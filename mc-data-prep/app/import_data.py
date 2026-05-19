@@ -82,7 +82,7 @@ def import_data_to_migration_center() -> str:
 
         req = migrationcenter_v1.CreateImportDataFileRequest(
             parent=job_name,
-            import_data_file_id=file_name.replace(".", "-").lower(),
+            import_data_file_id=file_name.split(".")[0].lower(),
             import_data_file=import_data_file,
         )
 
@@ -99,7 +99,6 @@ def import_data_to_migration_center() -> str:
                     data=f,
                     headers={
                         "Content-Type": "application/octet-stream",
-                        "x-goog-content-length-range": "0,104857600",
                     },
                 )
                 if put_resp.status_code == 200:

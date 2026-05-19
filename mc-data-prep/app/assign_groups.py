@@ -95,8 +95,8 @@ def assign_assets_to_groups() -> str:
             asset_id = asset.name.split('/')[-1]
             matched = False
             for _, row in df_tags.iterrows():
-                m_id = str(row["MachineId"])
-                source = row["Value"]
+                m_id = str(row["Machine Id"])
+                source = row["Tag Value"]
                 
                 if asset_id == m_id:
                     if source == "vmware":

@@ -153,14 +153,14 @@ def transform_infrastructure_data() -> str:
 
         # Generate tags
         tags_vmware = pd.DataFrame()
-        tags_vmware["MachineId"] = vm_vmware["MachineId"]
-        tags_vmware["Key"] = "source"
-        tags_vmware["Value"] = "vmware"
+        tags_vmware["Machine Id"] = vm_vmware["MachineId"]
+        tags_vmware["Tag Category"] = "source"
+        tags_vmware["Tag Value"] = "vmware"
 
         tags_hyperv = pd.DataFrame()
-        tags_hyperv["MachineId"] = vm_hyperv["MachineId"]
-        tags_hyperv["Key"] = "source"
-        tags_hyperv["Value"] = "hyperv"
+        tags_hyperv["Machine Id"] = vm_hyperv["MachineId"]
+        tags_hyperv["Tag Category"] = "source"
+        tags_hyperv["Tag Value"] = "hyperv"
 
         tags = pd.concat([tags_vmware, tags_hyperv], ignore_index=True)
 
@@ -243,12 +243,12 @@ def add_labels_to_tag_file(machine_ids: list[str], key: str, value: str) -> str:
     for mid in machine_ids:
         # Ensure we clear out any existing matching key/value pairs for this machine ID to avoid duplicates
         if not tags_df.empty:
-            tags_df = tags_df[~((tags_df["MachineId"] == mid) & (tags_df["Key"] == key))]
+            tags_df = tags_df[~((tags_df["Machine Id"] == mid) & (tags_df["Tag Category"] == key))]
             
         new_rows.append({
-            "MachineId": mid,
-            "Key": key,
-            "Value": value
+            "Machine Id": mid,
+            "Tag Category": key,
+            "Tag Value": value
         })
 
     if new_rows:

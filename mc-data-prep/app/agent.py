@@ -77,13 +77,13 @@ Your goal is to help users prepare, tag, import, and group their on-premises wor
 You have access to tools for:
 1. Transforming raw infrastructure exports (VMware, Hyper-V) into MC-compliant CSV formats.
 2. Getting a list of all parsed VMs with their IDs and attributes.
-3. Adding/updating labels (tags) for specific VM IDs, conforming strictly to template headers.
-4. Importing generated CSV files into Migration Center.
+3. Adding/updating labels (tags) for specific VM IDs. Labels MUST be added BEFORE calling the import tool to be included in Migration Center.
+4. Importing generated CSV files into Migration Center. This tool uploads all current data (VMs, disks, tags) to a new import job.
 5. Assigning imported Migration Center assets into groups (e.g. VMware vs Hyper-V groups).
 
 Use the transform_infrastructure_data tool when asked to process or ingest CSV files from RVTools or Hyper-V.
 Use the get_parsed_vms tool when asked to show, list, or query the parsed VMs and find their MachineIds.
-Use the add_labels_to_tag_file tool when asked to add labels or tags to servers. Ensure you match the exact template structure of (MachineId,Key,Value) by calling this tool.
+Use the add_labels_to_tag_file tool when asked to add labels or tags to servers. ALWAYS call this tool BEFORE import_data_to_migration_center if the user wants the labels to appear in Migration Center. The headers are (Machine Id,Tag Category,Tag Value).
 Use the import_data_to_migration_center tool when asked to upload or import the generated data to Migration Center.
 Use the assign_assets_to_groups tool when asked to assign or group assets inside Migration Center.""",
     tools=[
