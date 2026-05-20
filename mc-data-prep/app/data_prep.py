@@ -56,29 +56,45 @@ def transform_infrastructure_data() -> str:
         vinfo_path = os.path.join(EXPORTS_DIR, "vmware-exports", "RVTools_export_gcp.xlsx - vInfo.csv")
         vdisk_path = os.path.join(EXPORTS_DIR, "vmware-exports", "RVTools_export_gcp.xlsx - vDisk.csv")
 
-        if not os.path.exists(vinfo_path) or not os.path.exists(vdisk_path):
+        if not os.path.exists(vinfo_path):
+            print(f"VMware vInfo file not found: {vinfo_path}")
             return pd.DataFrame(), pd.DataFrame()
 
         df_info = pd.read_csv(vinfo_path)
-        df_disk = pd.read_csv(vdisk_path)
-
         df_info["MachineName"] = df_info["Path"].apply(extract_vm_name)
-        df_disk["Path_Name"] = df_disk["Path"].apply(extract_vm_name)
-        df_disk["MachineId"] = df_disk["Path_Name"]
         df_info["MachineId"] = df_info["MachineName"]
-
-        df_disk["CapacityMiB"] = df_disk["Capacity MiB"].apply(clean_number)
-        df_disk["SizeInGib"] = df_disk["CapacityMiB"] / 1024.0
-
-        disk_sum = df_disk.groupby("MachineId")["SizeInGib"].sum().reset_index()
-        disk_sum.rename(columns={"SizeInGib": "TotalDiskAllocatedGiB"}, inplace=True)
-
+        
+        # OS and CPU mapping
         df_info["MemoryMiB"] = df_info["Memory"].apply(clean_number)
         df_info["MemoryGiB"] = df_info["MemoryMiB"] / 1024.0
         df_info["AllocatedProcessorCoreCount"] = df_info["CPUs"]
         df_info["OsName"] = df_info["OS according to the configuration file"]
 
-        df_vm = pd.merge(df_info, disk_sum, on="MachineId", how="left")
+        # Handle Disk info if present
+        if os.path.exists(vdisk_path):
+            df_disk = pd.read_csv(vdisk_path)
+            df_disk["Path_Name"] = df_disk["Path"].apply(extract_vm_name)
+            df_disk["MachineId"] = df_disk["Path_Name"]
+            
+            df_disk["CapacityMiB"] = df_disk["Capacity MiB"].apply(clean_number)
+            df_disk["SizeInGib"] = df_disk["CapacityMiB"] / 1024.0
+
+            disk_sum = df_disk.groupby("MachineId")["SizeInGib"].sum().reset_index()
+            disk_sum.rename(columns={"SizeInGib": "TotalDiskAllocatedGiB"}, inplace=True)
+            
+            df_vm = pd.merge(df_info, disk_sum, on="MachineId", how="left")
+            
+            disk_info = pd.DataFrame()
+            disk_info["MachineId"] = df_disk["MachineId"]
+            disk_info["DiskLabel"] = df_disk["Disk"]
+            disk_info["SizeInGib"] = df_disk["SizeInGib"]
+            disk_info["UsedInGib"] = 0
+            disk_info["StorageTypeLabel"] = df_disk["Label"]
+        else:
+            print(f"VMware vDisk file not found: {vdisk_path}. Proceeding with vInfo only.")
+            df_vm = df_info.copy()
+            df_vm["TotalDiskAllocatedGiB"] = 0
+            disk_info = pd.DataFrame()
 
         vm_info = pd.DataFrame()
         vm_info["MachineId"] = df_vm["MachineId"]
@@ -86,6 +102,7 @@ def transform_infrastructure_data() -> str:
         vm_info["TotalDiskAllocatedGiB"] = df_vm["TotalDiskAllocatedGiB"]
         vm_info["AllocatedProcessorCoreCount"] = df_vm["AllocatedProcessorCoreCount"]
         vm_info["MemoryGiB"] = df_vm["MemoryGiB"]
+        
         def map_os_type(os_name):
             os_name = str(os_name).lower()
             if 'windows' in os_name: return 'Windows'
@@ -97,21 +114,17 @@ def transform_infrastructure_data() -> str:
         vm_info["IsPhysical"] = "FALSE"
         vm_info["MachineTypeLabel(optional)"] = "VMware VM"
 
-        disk_info = pd.DataFrame()
-        disk_info["MachineId"] = df_disk["MachineId"]
-        disk_info["DiskLabel"] = df_disk["Disk"]
-        disk_info["SizeInGib"] = df_disk["SizeInGib"]
-        disk_info["UsedInGib"] = 0
-        disk_info["StorageTypeLabel"] = df_disk["Label"]
-
         return vm_info, disk_info
 
     def process_hyperv():
         hv_path = os.path.join(EXPORTS_DIR, "hyperv-exports", "hvvmInfogcp.csv")
         if not os.path.exists(hv_path):
+            print(f"Hyper-V export file not found: {hv_path}")
             return pd.DataFrame(), pd.DataFrame()
 
         df = pd.read_csv(hv_path)
+        if df.empty:
+            return pd.DataFrame(), pd.DataFrame()
 
         df["MachineId"] = [f"hv-vm-{i}" for i in range(1, len(df) + 1)]
         df["MachineName"] = df["MachineId"]
@@ -148,21 +161,29 @@ def transform_infrastructure_data() -> str:
         vm_vmware, disk_vmware = process_vmware()
         vm_hyperv, disk_hyperv = process_hyperv()
 
+        if vm_vmware.empty and vm_hyperv.empty:
+            return "Error: No data found in exports/vmware-exports or exports/hyperv-exports. Please ensure your RVTools or Hyper-V CSV files are placed in the correct directories."
+
         vms = pd.concat([vm_vmware, vm_hyperv], ignore_index=True)
         disks = pd.concat([disk_vmware, disk_hyperv], ignore_index=True)
 
         # Generate tags
-        tags_vmware = pd.DataFrame()
-        tags_vmware["Machine Id"] = vm_vmware["MachineId"]
-        tags_vmware["Tag Category"] = "source"
-        tags_vmware["Tag Value"] = "vmware"
+        tags_list = []
+        if not vm_vmware.empty:
+            tags_vmware = pd.DataFrame()
+            tags_vmware["MachineId"] = vm_vmware["MachineId"]
+            tags_vmware["Key"] = "source"
+            tags_vmware["Value"] = "vmware"
+            tags_list.append(tags_vmware)
 
-        tags_hyperv = pd.DataFrame()
-        tags_hyperv["Machine Id"] = vm_hyperv["MachineId"]
-        tags_hyperv["Tag Category"] = "source"
-        tags_hyperv["Tag Value"] = "hyperv"
+        if not vm_hyperv.empty:
+            tags_hyperv = pd.DataFrame()
+            tags_hyperv["MachineId"] = vm_hyperv["MachineId"]
+            tags_hyperv["Key"] = "source"
+            tags_hyperv["Value"] = "hyperv"
+            tags_list.append(tags_hyperv)
 
-        tags = pd.concat([tags_vmware, tags_hyperv], ignore_index=True)
+        tags = pd.concat(tags_list, ignore_index=True) if tags_list else pd.DataFrame(columns=["MachineId", "Key", "Value"])
 
 
 
@@ -239,16 +260,34 @@ def add_labels_to_tag_file(machine_ids: list[str], key: str, value: str) -> str:
         tags_df = pd.DataFrame(columns=expected_headers)
 
     # 3. Process and add new rows
+    id_col = "MachineId"
+    for col in expected_headers:
+        if col.lower().replace(" ", "").replace("_", "") in ["machineid", "machine"]:
+            id_col = col
+            break
+
+    key_col = "Key"
+    for col in expected_headers:
+        if col.lower().replace(" ", "").replace("_", "") in ["key", "tagcategory", "category"]:
+            key_col = col
+            break
+
+    val_col = "Value"
+    for col in expected_headers:
+        if col.lower().replace(" ", "").replace("_", "") in ["value", "tagvalue"]:
+            val_col = col
+            break
+
     new_rows = []
     for mid in machine_ids:
         # Ensure we clear out any existing matching key/value pairs for this machine ID to avoid duplicates
-        if not tags_df.empty:
-            tags_df = tags_df[~((tags_df["Machine Id"] == mid) & (tags_df["Tag Category"] == key))]
+        if not tags_df.empty and id_col in tags_df.columns and key_col in tags_df.columns:
+            tags_df = tags_df[~((tags_df[id_col] == mid) & (tags_df[key_col] == key))]
             
         new_rows.append({
-            "Machine Id": mid,
-            "Tag Category": key,
-            "Tag Value": value
+            id_col: mid,
+            key_col: key,
+            val_col: value
         })
 
     if new_rows:

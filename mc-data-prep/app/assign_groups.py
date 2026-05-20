@@ -26,8 +26,12 @@ def assign_assets_to_groups() -> str:
     except Exception as e:
         return f"Error: Failed to read {tag_file}: {e}"
     
-    project_id = os.environ.get("GCP_PROJECT_ID")
-    location = os.environ.get("GCP_LOCATION", "us-central1")
+    # Robust environment variable detection
+    project_id = os.environ.get("GCP_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT")
+    location = os.environ.get("GCP_LOCATION") or os.environ.get("GOOGLE_CLOUD_LOCATION") or "us-central1"
+    
+    if location == "global":
+        location = "us-central1"
     
     if not project_id:
         try:
@@ -36,7 +40,7 @@ def assign_assets_to_groups() -> str:
             return f"Error: Failed to get default GCP project ID: {e}"
             
     if not project_id:
-        return "Error: GCP_PROJECT_ID environment variable not set and could not be determined."
+        return "Error: GCP_PROJECT_ID or GOOGLE_CLOUD_PROJECT environment variable not set and could not be determined."
 
     log(f"Using project: {project_id}, location: {location}")
 
@@ -87,6 +91,23 @@ def assign_assets_to_groups() -> str:
         log("Listing assets from Migration Center...")
         assets = client.list_assets(parent=parent)
         
+        # Robust column detection
+        id_col = None
+        for col in ["MachineId", "Machine Id", "Machine ID", "machine_id"]:
+            if col in df_tags.columns:
+                id_col = col
+                break
+        if not id_col:
+            id_col = df_tags.columns[0]
+
+        val_col = None
+        for col in ["Value", "Tag Value", "tag_value", "value"]:
+            if col in df_tags.columns:
+                val_col = col
+                break
+        if not val_col:
+            val_col = df_tags.columns[2] if len(df_tags.columns) > 2 else df_tags.columns[1]
+
         vmware_assets = []
         hyperv_assets = []
 
@@ -95,10 +116,10 @@ def assign_assets_to_groups() -> str:
             asset_id = asset.name.split('/')[-1]
             matched = False
             for _, row in df_tags.iterrows():
-                m_id = str(row["Machine Id"])
-                source = row["Tag Value"]
+                m_id = str(row[id_col])
+                source = str(row[val_col]).lower()
                 
-                if asset_id == m_id:
+                if asset_id == m_id or asset_id.lower() == m_id.lower():
                     if source == "vmware":
                         vmware_assets.append(asset.name)
                     elif source == "hyperv":

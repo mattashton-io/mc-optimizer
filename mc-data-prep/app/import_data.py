@@ -5,9 +5,10 @@ import requests
 from google.cloud import migrationcenter_v1
 
 def import_data_to_migration_center() -> str:
-    """Imports generated CSV files (vmInfo.csv, diskInfo.csv) into Migration Center.
+    """Imports generated CSV files (vmInfo.csv, diskInfo.csv, tagInfo.csv) into Migration Center.
     
-    It reads project and location from environment variables GCP_PROJECT_ID and GCP_LOCATION.
+    It reads project and location from environment variables GCP_PROJECT_ID (or GOOGLE_CLOUD_PROJECT) 
+    and GCP_LOCATION (or GOOGLE_CLOUD_LOCATION).
     It reads files from 'data/output' and uploads them to a new import job.
     
     Returns:
@@ -15,27 +16,31 @@ def import_data_to_migration_center() -> str:
     """
     OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "data", "output")
     
-    project_id = os.environ.get("GCP_PROJECT_ID")
-    location = os.environ.get("GCP_LOCATION", "us-central1")
+    # Robust environment variable detection
+    project_id = os.environ.get("GCP_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT")
+    location = os.environ.get("GCP_LOCATION") or os.environ.get("GOOGLE_CLOUD_LOCATION") or "us-central1"
+    
+    # Migration Center import jobs require a specific region, not 'global'
+    if location == "global":
+        location = "us-central1"
     
     if not project_id:
-        # Fallback to google.auth.default()
         try:
             _, project_id = google.auth.default()
         except Exception as e:
-            return f"Failed to get project ID: {e}"
+            return f"Error: GCP_PROJECT_ID environment variable not set and could not be determined from ADC: {e}"
             
     if not project_id:
-        return "GCP_PROJECT_ID environment variable not set and could not be determined."
+        return "Error: GCP_PROJECT_ID or GOOGLE_CLOUD_PROJECT environment variable not set."
 
     print(f"Using project: {project_id}, location: {location}")
 
     client = migrationcenter_v1.MigrationCenterClient()
 
     job_id = f"manual-import-{int(time.time())}"
-    
     parent = f"projects/{project_id}/locations/{location}"
-    print("Creating asset source...")
+    
+    print(f"Creating asset source in {parent}...")
     try:
         source_id = f"source-{int(time.time())}"
         source_op = client.create_source(
@@ -46,7 +51,7 @@ def import_data_to_migration_center() -> str:
         source = source_op.result()
         print(f"Asset source created: {source.name}")
     except Exception as e:
-        return f"Failed to create asset source: {e}"
+        return f"Error: Failed to create asset source in project '{project_id}' at '{location}': {e}. Please verify your GCP_PROJECT_ID and GCP_LOCATION environment variables."
 
     import_job = {
         "display_name": f"Manual Import {time.strftime('%Y%m%d-%H%M%S')}",
@@ -65,7 +70,7 @@ def import_data_to_migration_center() -> str:
         job_name = response.name
         print(f"Import job created: {job_name}")
     except Exception as e:
-        return f"Failed to create import job: {e}"
+        return f"Error: Failed to create import job: {e}"
 
     files = ["vmInfo.csv", "diskInfo.csv", "tagInfo.csv"]
     uploaded_files = []
@@ -75,7 +80,9 @@ def import_data_to_migration_center() -> str:
         file_path = os.path.join(OUTPUT_DIR, file_name)
         if not os.path.exists(file_path):
             print(f"File not found: {file_path}")
-            failed_files.append(file_name)
+            # If mandatory files are missing, we should probably stop
+            if file_name in ["vmInfo.csv", "diskInfo.csv"]:
+                 failed_files.append(file_name)
             continue
 
         import_data_file = {"format": "IMPORT_JOB_FORMAT_STRATOZONE_CSV"}
@@ -92,14 +99,16 @@ def import_data_to_migration_center() -> str:
             resp = op.result()
             upload_uri = resp.upload_file_info.signed_uri
             
-            print(f"Uploading file {file_name} to {upload_uri}...")
+            headers = dict(resp.upload_file_info.headers)
+            if not headers:
+                headers = {"Content-Type": "application/octet-stream"}
+            
+            print(f"Uploading file {file_name} to signed URL...")
             with open(file_path, "rb") as f:
                 put_resp = requests.put(
                     upload_uri,
                     data=f,
-                    headers={
-                        "Content-Type": "application/octet-stream",
-                    },
+                    headers=headers,
                 )
                 if put_resp.status_code == 200:
                     print(f"Successfully uploaded {file_name}")
@@ -112,28 +121,42 @@ def import_data_to_migration_center() -> str:
             failed_files.append(file_name)
 
     if failed_files:
-        return f"Import completed with failures. Uploaded: {uploaded_files}. Failed: {failed_files}"
+        return f"Error: Import aborted due to missing or failed file uploads: {failed_files}. Uploaded: {uploaded_files}. Ensure you have run data transformation first."
     
-    def wait_for_job_state(job_name, target_states, transitioning_states):
+    def wait_for_job_state(job_name, target_states, transitioning_states, timeout_sec=600):
+        """Polls for job state with a timeout to prevent infinite hangs."""
+        start_time = time.time()
         while True:
-            job = client.get_import_job(name=job_name)
-            state = int(job.state)
-            if state in target_states:
-                return job
-            if state not in transitioning_states:
-                return job
-            print(f"Job state is {state}. Waiting...")
-            time.sleep(10)
+            if time.time() - start_time > timeout_sec:
+                return None, f"Timeout: Job {job_name} timed out after {timeout_sec}s while waiting for states {target_states}."
+            
+            try:
+                job = client.get_import_job(name=job_name)
+                state = int(job.state)
+                if state in target_states:
+                    return job, None
+                if state not in transitioning_states:
+                    # If it's not in a transitioning state and not in a target state, it might be stuck or in an error state
+                    return job, None
+                
+                print(f"Job state is {job.state} ({state}). Waiting...")
+                time.sleep(10)
+            except Exception as e:
+                return None, f"Error polling job state: {e}"
 
     print(f"Validating import job {job_name}...")
     try:
         client.validate_import_job(name=job_name)
-        print("Waiting for validation to complete (polling state)...")
-        # 5: VALIDATING, 7: READY, 6: FAILED_VALIDATION, 3: COMPLETED
-        job = wait_for_job_state(job_name, [7, 6, 3], [5, 1, 2])
+        print("Waiting for validation to complete...")
+        # 5: VALIDATING, 7: READY, 6: FAILED_VALIDATION, 3: COMPLETED, 4: FAILED
+        # 1: PENDING, 2: RUNNING
+        job, error = wait_for_job_state(job_name, [7, 6, 3, 4], [5, 1, 2])
+        if error:
+            return error
+        
         print(f"Job state after validation: {job.state}")
         
-        if job.state in [4, 6]: # FAILED or FAILED_VALIDATION
+        if int(job.state) in [4, 6]: # FAILED or FAILED_VALIDATION
              report = job.validation_report
              error_msgs = []
              if report:
@@ -147,29 +170,32 @@ def import_data_to_migration_center() -> str:
                  if hasattr(report, 'job_errors') and report.job_errors:
                      for err in report.job_errors:
                          error_msgs.append(f"Job: {err.error_details}")
-             return f"Validation failed with state {job.state}. Errors: {'; '.join(error_msgs[:10])}{'...' if len(error_msgs) > 10 else ''}"
+             return f"Error: Validation failed with state {job.state}. Errors: {'; '.join(error_msgs[:10])}{'...' if len(error_msgs) > 10 else ''}"
              
-        # Assuming 7 is READY
-        if job.state not in [7, 3]: # 7 is READY, 3 is COMPLETED
-             return f"Validation failed or job not ready. State: {job.state}"
+        if int(job.state) not in [7, 3]: # 7 is READY, 3 is COMPLETED
+             return f"Error: Validation failed or job stuck. State: {job.state}. Please ensure the generated CSV files are valid Migration Center exports."
     except Exception as e:
-        return f"Validation failed: {e}"
+        return f"Error: Validation failed: {e}"
 
     print(f"Running import job {job_name}...")
     try:
         client.run_import_job(name=job_name)
-        print("Waiting for import job to complete (polling state)...")
-        # 2: RUNNING, 3: COMPLETED, 4: FAILED
-        job = wait_for_job_state(job_name, [3, 4], [2, 1])
+        print("Waiting for import job to complete...")
+        # 3: COMPLETED, 4: FAILED
+        # Transitioning: 1: PENDING, 2: RUNNING, 5: VALIDATING, 7: READY
+        job, error = wait_for_job_state(job_name, [3, 4], [1, 2, 5, 7])
+        if error:
+            return error
+            
         print(f"Job state after run: {job.state}")
-        if job.state != 3: # 3 is COMPLETED
+        if int(job.state) != 3: # 3 is COMPLETED
             report = job.execution_report
             error_msgs = []
             if report and report.execution_errors:
                 for err in report.execution_errors:
                     error_msgs.append(f"{err.error_details}")
-            return f"Run failed. State: {job.state}. Errors: {'; '.join(error_msgs[:10])}"
+            return f"Error: Run failed. State: {job.state}. Errors: {'; '.join(error_msgs[:10])}"
     except Exception as e:
-        return f"Run failed: {e}"
+        return f"Error: Run failed: {e}"
 
-    return f"Successfully imported and processed data in job {job_name}. Uploaded: {uploaded_files}"
+    return f"Success: Data imported and processed in job {job_name}. Uploaded files: {uploaded_files}. Assets are now available in Migration Center. If you added labels/tags, please run the 'add_labels_post_import' tool to ensure they are synced to the live assets."
