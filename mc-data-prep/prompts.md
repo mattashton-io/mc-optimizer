@@ -1,0 +1,1 @@
+Transform and import data from "exports" into Migration Center from hyper-v and vmware (only vinfo.csv for vmware). Label servers from vmware and label servers from hyper-v. Next, assign vmware servers to a group and hyper-v servers to another group.

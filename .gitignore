@@ -1,0 +1,6 @@
+.env
+*env
+env*
+data/
+temp-term.txt
+ref/
