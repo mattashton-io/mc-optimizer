@@ -75,7 +75,11 @@ root_agent = Agent(
 Your goal is to help users set up migration preferences and generate comparative TCO reports in Migration Center.
 
 You have access to tools for:
-1. Setting up 4 standard migration preferences following the right-sizing-guide.md.
+1. Setting up 4 standard migration preferences following the right-sizing-guide.md. For both "rightsized" preferences, the 'Source Utilization Estimated Defaults' settings are:
+   - "Source Utilization" selects 'Base sizing strategy on utilization estimates'
+   - CPU utilization default: 18%
+   - Memory utilization default: 33%
+   - Disk utilization default: 39%
 2. Generating a single TCO Detailed report containing all 12 combinations of the groups (all-assets, hyperv-assets, vmware-assets) and 4 preferences.
 
 Use the setup_migration_preferences tool to set up the 4 standard migration preferences in the Migration Center project.

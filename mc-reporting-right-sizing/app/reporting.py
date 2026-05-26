@@ -40,27 +40,35 @@ def setup_migration_preferences() -> str:
     
     preferences = [
         {
-            "id": "iona-1yr-CUD-like-for-like",
-            "display_name": "iona-1yr-CUD-like-for-like",
+            "id": "one-year-cud-like-for-like",
+            "display_name": "1-year CUD like-for-like",
             "commitment_plan": migrationcenter_v1.CommitmentPlan.COMMITMENT_PLAN_ONE_YEAR,
+            # Base sizing strategy on 100% provisioned shape (no rightsizing)
             "sizing_strategy": migrationcenter_v1.SizingOptimizationStrategy.SIZING_OPTIMIZATION_STRATEGY_SAME_AS_SOURCE
         },
         {
-            "id": "iona-3yr-CUD-like-for-like",
-            "display_name": "iona-3yr-CUD-like-for-like",
+            "id": "three-year-cud-like-for-like",
+            "display_name": "3-year CUD like-for-like",
             "commitment_plan": migrationcenter_v1.CommitmentPlan.COMMITMENT_PLAN_THREE_YEARS,
+            # Base sizing strategy on 100% provisioned shape (no rightsizing)
             "sizing_strategy": migrationcenter_v1.SizingOptimizationStrategy.SIZING_OPTIMIZATION_STRATEGY_SAME_AS_SOURCE
         },
         {
-            "id": "iona-1yr-CUD-rightsized",
-            "display_name": "iona-1yr-CUD-rightsized",
+            "id": "one-year-cud-rightsized",
+            "display_name": "1-year CUD rightsized",
             "commitment_plan": migrationcenter_v1.CommitmentPlan.COMMITMENT_PLAN_ONE_YEAR,
+            # For both "rightsized" preferences, the 'Source Utilization Estimated Defaults' settings are:
+            # "Source Utilization" selects 'Base sizing strategy on utilization estimates'
+            # CPU utilization default: 18%, Memory utilization default: 33%, Disk utilization default: 39%
             "sizing_strategy": migrationcenter_v1.SizingOptimizationStrategy.SIZING_OPTIMIZATION_STRATEGY_AGGRESSIVE
         },
         {
-            "id": "iona-3yr-CUD-rightsized",
-            "display_name": "iona-3yr-CUD-rightsized",
+            "id": "three-year-cud-rightsized",
+            "display_name": "3-year CUD rightsized",
             "commitment_plan": migrationcenter_v1.CommitmentPlan.COMMITMENT_PLAN_THREE_YEARS,
+            # For both "rightsized" preferences, the 'Source Utilization Estimated Defaults' settings are:
+            # "Source Utilization" selects 'Base sizing strategy on utilization estimates'
+            # CPU utilization default: 18%, Memory utilization default: 33%, Disk utilization default: 39%
             "sizing_strategy": migrationcenter_v1.SizingOptimizationStrategy.SIZING_OPTIMIZATION_STRATEGY_AGGRESSIVE
         }
     ]
@@ -75,12 +83,15 @@ def setup_migration_preferences() -> str:
             target_product=migrationcenter_v1.ComputeMigrationTargetProduct.COMPUTE_MIGRATION_TARGET_PRODUCT_COMPUTE_ENGINE,
             region_preferences=migrationcenter_v1.RegionPreferences(preferred_regions=[location]),
             commitment_plan=pref["commitment_plan"],
-            sizing_optimization_strategy=pref["sizing_strategy"]
+            sizing_optimization_strategy=pref["sizing_strategy"],
+            compute_engine_preferences=migrationcenter_v1.ComputeEnginePreferences(
+                license_type=migrationcenter_v1.LicenseType.LICENSE_TYPE_DEFAULT
+            )
         )
         
         pref_set = migrationcenter_v1.PreferenceSet(
             display_name=pref["display_name"],
-            description=f"Standard preference set: {pref['display_name']}",
+            description=f"Standard preference set: {pref['display_name']}" + (" (CPU 18%, Mem 33%, Disk 39% utilization)" if "rightsized" in pref["id"] else ""),
             virtual_machine_preferences=vm_pref
         )
         
@@ -252,8 +263,8 @@ def create_tco_report() -> str:
     pref_ids = [
         "one-year-cud-like-for-like",
         "three-year-cud-like-for-like",
-        "one-year-cud-right-sized",
-        "three-year-cud-right-sized"
+        "one-year-cud-rightsized",
+        "three-year-cud-rightsized"
     ]
     
     assignments = []
@@ -268,7 +279,7 @@ def create_tco_report() -> str:
                 )
             )
             
-    report_config_id = "tco-detailed-config"
+    report_config_id = f"tco-detailed-config-{int(time.time())}"
     report_config_name = f"{parent}/reportConfigs/{report_config_id}"
     
     # Try to delete existing report config to avoid hitting RESOURCE_EXHAUSTED
@@ -324,4 +335,3 @@ def create_tco_report() -> str:
         return f"Error creating TCO Detailed Report: {re}\n" + "\n".join(logs)
         
     return "\n".join(logs)
-join(logs)

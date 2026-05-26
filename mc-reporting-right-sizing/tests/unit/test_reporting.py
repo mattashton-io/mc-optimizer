@@ -19,6 +19,27 @@ def test_setup_migration_preferences(mock_client_class, mock_ctx):
     
     assert "test-project" in res
     assert mock_client.create_preference_set.call_count == 4
+    
+    # Verify sizing strategies
+    # Calls 2 and 3 should be rightsized (index 2 and 3 in preferences list)
+    # The actual order might depend on the implementation, but let's check what was sent in create_preference_set
+    created_prefs = []
+    for call in mock_client.create_preference_set.call_args_list:
+        if "request" in call.kwargs:
+            created_prefs.append(call.kwargs["request"].preference_set)
+        elif len(call.args) > 0:
+            # Depending on how the SDK handles positional args for request
+            # Usually it might be the first arg if not keyworded
+            req = call.args[0]
+            if hasattr(req, "preference_set"):
+                created_prefs.append(req.preference_set)
+            else:
+                created_prefs.append(req)
+
+    rightsized_prefs = [p for p in created_prefs if "rightsized" in p.display_name.lower()]
+    assert len(rightsized_prefs) == 2
+    for p in rightsized_prefs:
+        assert p.virtual_machine_preferences.sizing_optimization_strategy == 3 # AGGRESSIVE
 
 @patch("app.reporting.get_gcp_context")
 @patch("app.reporting.migrationcenter_v1.MigrationCenterClient")
