@@ -39,7 +39,15 @@ def test_setup_migration_preferences(mock_client_class, mock_ctx):
     rightsized_prefs = [p for p in created_prefs if "rightsized" in p.display_name.lower()]
     assert len(rightsized_prefs) == 2
     for p in rightsized_prefs:
-        assert p.virtual_machine_preferences.sizing_optimization_strategy == 3 # AGGRESSIVE
+        assert p.virtual_machine_preferences.sizing_optimization_strategy == 4 # CUSTOM
+        c_opt = p.virtual_machine_preferences.custom_sizing_optimization_customization
+        assert c_opt.cpu_usage_percentage == 95
+        assert c_opt.cpu_safety_buffer_percentage == 20
+        assert c_opt.memory_usage_percentage == 90
+        assert c_opt.memory_safety_buffer_percentage == 15
+        assert c_opt.storage_usage_percentage == 80
+        assert c_opt.storage_safety_buffer_percentage == 10
+
 
 @patch("app.reporting.get_gcp_context")
 @patch("app.reporting.migrationcenter_v1.MigrationCenterClient")

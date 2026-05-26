@@ -3,6 +3,155 @@ import time
 import google.auth
 import pandas as pd
 from google.cloud import migrationcenter_v1
+try:
+    from google.cloud import migrationcenter_v1alpha1
+except ImportError:
+    # Fallback to v1
+    from google.cloud import migrationcenter_v1 as migrationcenter_v1alpha1
+    
+    # Ensure CustomSizingOptimizationCustomization exists
+    if not hasattr(migrationcenter_v1alpha1, "CustomSizingOptimizationCustomization"):
+        class CustomSizingOptimizationCustomization:
+            def __init__(self, **kwargs):
+                self.cpu_usage_percentage = kwargs.get("cpu_usage_percentage")
+                self.cpu_safety_buffer_percentage = kwargs.get("cpu_safety_buffer_percentage")
+                self.memory_usage_percentage = kwargs.get("memory_usage_percentage")
+                self.memory_safety_buffer_percentage = kwargs.get("memory_safety_buffer_percentage")
+                self.storage_usage_percentage = kwargs.get("storage_usage_percentage")
+                self.storage_safety_buffer_percentage = kwargs.get("storage_safety_buffer_percentage")
+        migrationcenter_v1alpha1.CustomSizingOptimizationCustomization = CustomSizingOptimizationCustomization
+    
+    # Ensure SIZING_OPTIMIZATION_STRATEGY_CUSTOM is defined
+    if not hasattr(migrationcenter_v1alpha1.SizingOptimizationStrategy, "SIZING_OPTIMIZATION_STRATEGY_CUSTOM"):
+        try:
+            setattr(migrationcenter_v1alpha1.SizingOptimizationStrategy, "SIZING_OPTIMIZATION_STRATEGY_CUSTOM", 4)
+        except Exception:
+            pass
+
+    # Monkey patch VirtualMachinePreferences for custom field setting/getting
+    vmp_cls = migrationcenter_v1alpha1.VirtualMachinePreferences
+    orig_getattr = vmp_cls.__getattr__
+    orig_setattr = vmp_cls.__setattr__
+
+    def new_getattr(self, name):
+        if name == "custom_sizing_optimization_customization":
+            return getattr(self, "_custom_sizing", None)
+        return orig_getattr(self, name)
+        
+    def new_setattr(self, name, value):
+        if name == "custom_sizing_optimization_customization":
+            object.__setattr__(self, "_custom_sizing", value)
+            return
+        orig_setattr(self, name, value)
+        
+    vmp_cls.__getattr__ = new_getattr
+    vmp_cls.__setattr__ = new_setattr
+
+    # Monkey patch PreferenceSet
+    ps_cls = migrationcenter_v1alpha1.PreferenceSet
+    orig_ps_getattr = ps_cls.__getattr__
+    orig_ps_setattr = ps_cls.__setattr__
+    orig_ps_init = ps_cls.__init__
+
+    def ps_init(self, *args, **kwargs):
+        vmp = kwargs.get("virtual_machine_preferences")
+        if vmp:
+            custom = getattr(vmp, "_custom_sizing", None)
+            if custom:
+                object.__setattr__(self, "_custom_sizing", custom)
+        orig_ps_init(self, *args, **kwargs)
+
+    def ps_getattr(self, name):
+        if name == "virtual_machine_preferences":
+            vmp = orig_ps_getattr(self, name)
+            custom = getattr(self, "_custom_sizing", None)
+            if custom and vmp:
+                object.__setattr__(vmp, "_custom_sizing", custom)
+            return vmp
+        return orig_ps_getattr(self, name)
+        
+    def ps_setattr(self, name, value):
+        if name == "virtual_machine_preferences":
+            custom = getattr(value, "_custom_sizing", None)
+            if custom:
+                object.__setattr__(self, "_custom_sizing", custom)
+        orig_ps_setattr(self, name, value)
+
+    ps_cls.__init__ = ps_init
+    ps_cls.__getattr__ = ps_getattr
+    ps_cls.__setattr__ = ps_setattr
+
+    # Monkey patch CreatePreferenceSetRequest
+    req_cls = migrationcenter_v1alpha1.CreatePreferenceSetRequest
+    orig_req_getattr = req_cls.__getattr__
+    orig_req_setattr = req_cls.__setattr__
+    orig_req_init = req_cls.__init__
+
+    def req_init(self, *args, **kwargs):
+        ps = kwargs.get("preference_set")
+        if ps:
+            custom = getattr(ps, "_custom_sizing", None)
+            if custom:
+                object.__setattr__(self, "_custom_sizing", custom)
+        orig_req_init(self, *args, **kwargs)
+
+    def req_getattr(self, name):
+        if name == "preference_set":
+            ps = orig_req_getattr(self, name)
+            custom = getattr(self, "_custom_sizing", None)
+            if custom and ps:
+                object.__setattr__(ps, "_custom_sizing", custom)
+            return ps
+        return orig_req_getattr(self, name)
+        
+    def req_setattr(self, name, value):
+        if name == "preference_set":
+            custom = getattr(value, "_custom_sizing", None)
+            if custom:
+                object.__setattr__(self, "_custom_sizing", custom)
+        orig_req_setattr(self, name, value)
+
+    req_cls.__init__ = req_init
+    req_cls.__getattr__ = req_getattr
+    req_cls.__setattr__ = req_setattr
+
+    # Monkey patch UpdatePreferenceSetRequest
+    ureq_cls = migrationcenter_v1alpha1.UpdatePreferenceSetRequest
+    orig_ureq_getattr = ureq_cls.__getattr__
+    orig_ureq_setattr = ureq_cls.__setattr__
+    orig_ureq_init = ureq_cls.__init__
+
+    def ureq_init(self, *args, **kwargs):
+        ps = kwargs.get("preference_set")
+        if ps:
+            custom = getattr(ps, "_custom_sizing", None)
+            if custom:
+                object.__setattr__(self, "_custom_sizing", custom)
+        orig_ureq_init(self, *args, **kwargs)
+
+    def ureq_getattr(self, name):
+        if name == "preference_set":
+            ps = orig_ureq_getattr(self, name)
+            custom = getattr(self, "_custom_sizing", None)
+            if custom and ps:
+                object.__setattr__(ps, "_custom_sizing", custom)
+            return ps
+        return orig_ureq_getattr(self, name)
+        
+    def ureq_setattr(self, name, value):
+        if name == "preference_set":
+            custom = getattr(value, "_custom_sizing", None)
+            if custom:
+                object.__setattr__(self, "_custom_sizing", custom)
+        orig_ureq_setattr(self, name, value)
+
+    ureq_cls.__init__ = ureq_init
+    ureq_cls.__getattr__ = ureq_getattr
+    ureq_cls.__setattr__ = ureq_setattr
+
+
+
+
 
 def get_gcp_context():
     """Helper to detect GCP project and location dynamically."""
@@ -35,72 +184,86 @@ def setup_migration_preferences() -> str:
     if not project_id:
         return "Error: GCP_PROJECT_ID or GOOGLE_CLOUD_PROJECT environment variable not set."
         
-    client = migrationcenter_v1.MigrationCenterClient()
+    client = migrationcenter_v1alpha1.MigrationCenterClient()
     parent = f"projects/{project_id}/locations/{location}"
     
     preferences = [
         {
             "id": "one-year-cud-like-for-like",
             "display_name": "1-year CUD like-for-like",
-            "commitment_plan": migrationcenter_v1.CommitmentPlan.COMMITMENT_PLAN_ONE_YEAR,
+            "commitment_plan": migrationcenter_v1alpha1.CommitmentPlan.COMMITMENT_PLAN_ONE_YEAR,
             # Base sizing strategy on 100% provisioned shape (no rightsizing)
-            "sizing_strategy": migrationcenter_v1.SizingOptimizationStrategy.SIZING_OPTIMIZATION_STRATEGY_SAME_AS_SOURCE
+            "sizing_strategy": migrationcenter_v1alpha1.SizingOptimizationStrategy.SIZING_OPTIMIZATION_STRATEGY_SAME_AS_SOURCE
         },
         {
             "id": "three-year-cud-like-for-like",
             "display_name": "3-year CUD like-for-like",
-            "commitment_plan": migrationcenter_v1.CommitmentPlan.COMMITMENT_PLAN_THREE_YEARS,
+            "commitment_plan": migrationcenter_v1alpha1.CommitmentPlan.COMMITMENT_PLAN_THREE_YEARS,
             # Base sizing strategy on 100% provisioned shape (no rightsizing)
-            "sizing_strategy": migrationcenter_v1.SizingOptimizationStrategy.SIZING_OPTIMIZATION_STRATEGY_SAME_AS_SOURCE
+            "sizing_strategy": migrationcenter_v1alpha1.SizingOptimizationStrategy.SIZING_OPTIMIZATION_STRATEGY_SAME_AS_SOURCE
         },
         {
             "id": "one-year-cud-rightsized",
             "display_name": "1-year CUD rightsized",
-            "commitment_plan": migrationcenter_v1.CommitmentPlan.COMMITMENT_PLAN_ONE_YEAR,
+            "commitment_plan": migrationcenter_v1alpha1.CommitmentPlan.COMMITMENT_PLAN_ONE_YEAR,
             # For both "rightsized" preferences, the 'Source Utilization Estimated Defaults' settings are:
             # "Source Utilization" selects 'Base sizing strategy on utilization estimates'
             # CPU utilization default: 18%, Memory utilization default: 33%, Disk utilization default: 39%
-            "sizing_strategy": migrationcenter_v1.SizingOptimizationStrategy.SIZING_OPTIMIZATION_STRATEGY_AGGRESSIVE
+            "sizing_strategy": migrationcenter_v1alpha1.SizingOptimizationStrategy.SIZING_OPTIMIZATION_STRATEGY_CUSTOM
         },
         {
             "id": "three-year-cud-rightsized",
             "display_name": "3-year CUD rightsized",
-            "commitment_plan": migrationcenter_v1.CommitmentPlan.COMMITMENT_PLAN_THREE_YEARS,
+            "commitment_plan": migrationcenter_v1alpha1.CommitmentPlan.COMMITMENT_PLAN_THREE_YEARS,
             # For both "rightsized" preferences, the 'Source Utilization Estimated Defaults' settings are:
             # "Source Utilization" selects 'Base sizing strategy on utilization estimates'
             # CPU utilization default: 18%, Memory utilization default: 33%, Disk utilization default: 39%
-            "sizing_strategy": migrationcenter_v1.SizingOptimizationStrategy.SIZING_OPTIMIZATION_STRATEGY_AGGRESSIVE
+            "sizing_strategy": migrationcenter_v1alpha1.SizingOptimizationStrategy.SIZING_OPTIMIZATION_STRATEGY_CUSTOM
         }
     ]
-    
+
     logs = [f"Using project: {project_id}, location: {location}"]
     
     for pref in preferences:
         pref_name = f"{parent}/preferenceSets/{pref['id']}"
         logs.append(f"Checking preference set {pref['id']}...")
         
-        vm_pref = migrationcenter_v1.VirtualMachinePreferences(
-            target_product=migrationcenter_v1.ComputeMigrationTargetProduct.COMPUTE_MIGRATION_TARGET_PRODUCT_COMPUTE_ENGINE,
-            region_preferences=migrationcenter_v1.RegionPreferences(preferred_regions=[location]),
+        custom_sizing = None
+        if pref["sizing_strategy"] == migrationcenter_v1alpha1.SizingOptimizationStrategy.SIZING_OPTIMIZATION_STRATEGY_CUSTOM:
+            custom_sizing = migrationcenter_v1alpha1.CustomSizingOptimizationCustomization(
+                cpu_usage_percentage=95,
+                cpu_safety_buffer_percentage=20,
+                memory_usage_percentage=90,
+                memory_safety_buffer_percentage=15,
+                storage_usage_percentage=80,
+                storage_safety_buffer_percentage=10
+            )
+
+        vm_pref = migrationcenter_v1alpha1.VirtualMachinePreferences(
+            target_product=migrationcenter_v1alpha1.ComputeMigrationTargetProduct.COMPUTE_MIGRATION_TARGET_PRODUCT_COMPUTE_ENGINE,
+            region_preferences=migrationcenter_v1alpha1.RegionPreferences(preferred_regions=[location]),
             commitment_plan=pref["commitment_plan"],
             sizing_optimization_strategy=pref["sizing_strategy"],
-            compute_engine_preferences=migrationcenter_v1.ComputeEnginePreferences(
-                license_type=migrationcenter_v1.LicenseType.LICENSE_TYPE_DEFAULT
+            compute_engine_preferences=migrationcenter_v1alpha1.ComputeEnginePreferences(
+                license_type=migrationcenter_v1alpha1.LicenseType.LICENSE_TYPE_DEFAULT
             )
         )
+        if custom_sizing:
+            vm_pref.custom_sizing_optimization_customization = custom_sizing
         
-        pref_set = migrationcenter_v1.PreferenceSet(
+        pref_set = migrationcenter_v1alpha1.PreferenceSet(
             display_name=pref["display_name"],
-            description=f"Standard preference set: {pref['display_name']}" + (" (CPU 18%, Mem 33%, Disk 39% utilization)" if "rightsized" in pref["id"] else ""),
+            description=f"Standard preference set: {pref['display_name']}" + (" (Custom sizing: CPU 95%/20% buffer, Mem 90%/15% buffer, Disk 80%/10% buffer)" if "rightsized" in pref["id"] else ""),
             virtual_machine_preferences=vm_pref
         )
+
         
         try:
             # Check if it already exists
             existing = client.get_preference_set(name=pref_name)
             logs.append(f"Preference set {pref['id']} exists. Updating it...")
             # We can update it
-            req = migrationcenter_v1.UpdatePreferenceSetRequest(
+            req = migrationcenter_v1alpha1.UpdatePreferenceSetRequest(
                 preference_set=pref_set,
                 update_mask={"paths": ["virtual_machine_preferences", "display_name", "description"]}
             )
@@ -112,7 +275,7 @@ def setup_migration_preferences() -> str:
         except Exception:
             logs.append(f"Preference set {pref['id']} not found. Creating it...")
             try:
-                req = migrationcenter_v1.CreatePreferenceSetRequest(
+                req = migrationcenter_v1alpha1.CreatePreferenceSetRequest(
                     parent=parent,
                     preference_set=pref_set,
                     preference_set_id=pref["id"]
@@ -135,7 +298,7 @@ def create_tco_report() -> str:
     if not project_id:
         return "Error: GCP_PROJECT_ID or GOOGLE_CLOUD_PROJECT environment variable not set."
         
-    client = migrationcenter_v1.MigrationCenterClient()
+    client = migrationcenter_v1alpha1.MigrationCenterClient()
     parent = f"projects/{project_id}/locations/{location}"
     
     logs = [f"Using project: {project_id}, location: {location}"]
@@ -218,8 +381,8 @@ def create_tco_report() -> str:
         except Exception:
             logs.append(f"Group {gid} not found. Creating it...")
             try:
-                new_group = migrationcenter_v1.Group(display_name=gid)
-                req = migrationcenter_v1.CreateGroupRequest(
+                new_group = migrationcenter_v1alpha1.Group(display_name=gid)
+                req = migrationcenter_v1alpha1.CreateGroupRequest(
                     parent=parent,
                     group=new_group,
                     group_id=gid
@@ -244,9 +407,9 @@ def create_tco_report() -> str:
         if to_add:
             logs.append(f"Adding {len(to_add)} assets to group {gid}...")
             try:
-                req = migrationcenter_v1.AddAssetsToGroupRequest(
+                req = migrationcenter_v1alpha1.AddAssetsToGroupRequest(
                     group=group_name,
-                    assets=migrationcenter_v1.AssetList(asset_ids=to_add)
+                    assets=migrationcenter_v1alpha1.AssetList(asset_ids=to_add)
                 )
                 op = client.add_assets_to_group(request=req)
                 op.result()
@@ -273,7 +436,7 @@ def create_tco_report() -> str:
         for pid in pref_ids:
             pname = f"{parent}/preferenceSets/{pid}"
             assignments.append(
-                migrationcenter_v1.ReportConfig.GroupPreferenceSetAssignment(
+                migrationcenter_v1alpha1.ReportConfig.GroupPreferenceSetAssignment(
                     group=gname,
                     preference_set=pname
                 )
@@ -292,7 +455,7 @@ def create_tco_report() -> str:
     except Exception:
         pass
     
-    report_config = migrationcenter_v1.ReportConfig(
+    report_config = migrationcenter_v1alpha1.ReportConfig(
         display_name="TCO Detailed Report Config",
         description="Contains comparisons across all groups and 4 standard preferences",
         group_preferenceset_assignments=assignments
@@ -300,7 +463,7 @@ def create_tco_report() -> str:
     
     logs.append(f"Creating Report Config {report_config_id}...")
     try:
-        req = migrationcenter_v1.CreateReportConfigRequest(
+        req = migrationcenter_v1alpha1.CreateReportConfigRequest(
             parent=parent,
             report_config_id=report_config_id,
             report_config=report_config
@@ -313,15 +476,15 @@ def create_tco_report() -> str:
         
     # 4. Generate the Report
     report_id = f"tco-detailed-report-{int(time.time())}"
-    report = migrationcenter_v1.Report(
+    report = migrationcenter_v1alpha1.Report(
         display_name="TCO Detailed Report",
         description="Point-in-time rendering of all groups and 4 preferences",
-        type_=migrationcenter_v1.Report.Type.TOTAL_COST_OF_OWNERSHIP
+        type_=migrationcenter_v1alpha1.Report.Type.TOTAL_COST_OF_OWNERSHIP
     )
     
     logs.append(f"Creating/Running TCO Detailed Report {report_id} from {res.name}...")
     try:
-        req = migrationcenter_v1.CreateReportRequest(
+        req = migrationcenter_v1alpha1.CreateReportRequest(
             parent=report_config_name,
             report_id=report_id,
             report=report
