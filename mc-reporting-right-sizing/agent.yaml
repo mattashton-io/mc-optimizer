@@ -1,0 +1,8 @@
+name: mc-reporting-right-sizing-agent
+version: 1.0.0
+runtime: python312
+entrypoint: app.agent:root_agent
+env_vars:
+  GOOGLE_GENAI_USE_VERTEXAI: "1"
+  GOOGLE_CLOUD_PROJECT: "iona-univ-ashton"
+  GOOGLE_CLOUD_LOCATION: "us-east4"
