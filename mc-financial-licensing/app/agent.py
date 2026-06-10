@@ -63,14 +63,24 @@ def get_current_time(query: str) -> str:
     return f"The current time for query {query} is {now.strftime('%Y-%m-%d %H:%M:%S %Z%z')}"
 
 
+from app.slides_export import export_reports_to_slides
+
+
 root_agent = Agent(
     name="root_agent",
     model=Gemini(
         model="gemini-flash-latest",
         retry_options=types.HttpRetryOptions(attempts=3),
     ),
-    instruction="You are a helpful AI assistant designed to provide accurate and useful information.",
-    tools=[get_weather, get_current_time],
+    instruction=(
+        "You are the Migration Center Financial and Licensing Agent. Your primary role is to "
+        "analyze TCO (Total Cost of Ownership) and licensing reports from Migration Center, "
+        "calculate Windows licensing costs, and generate executive-ready presentations.\n\n"
+        "You have access to the `export_reports_to_slides` tool, which grabs the most recent TCO "
+        "and Licensing reports from Migration Center and exports them to a premium Google Slides presentation. "
+        "Always use this tool when asked to generate slides or analyze/export report data."
+    ),
+    tools=[get_weather, get_current_time, export_reports_to_slides],
 )
 
 app = App(
