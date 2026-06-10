@@ -30,39 +30,6 @@ os.environ["GOOGLE_CLOUD_LOCATION"] = "global"
 os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "True"
 
 
-def get_weather(query: str) -> str:
-    """Simulates a web search. Use it get information on weather.
-
-    Args:
-        query: A string containing the location to get weather information for.
-
-    Returns:
-        A string with the simulated weather information for the queried location.
-    """
-    if "sf" in query.lower() or "san francisco" in query.lower():
-        return "It's 60 degrees and foggy."
-    return "It's 90 degrees and sunny."
-
-
-def get_current_time(query: str) -> str:
-    """Simulates getting the current time for a city.
-
-    Args:
-        city: The name of the city to get the current time for.
-
-    Returns:
-        A string with the current time information.
-    """
-    if "sf" in query.lower() or "san francisco" in query.lower():
-        tz_identifier = "America/Los_Angeles"
-    else:
-        return f"Sorry, I don't have timezone information for query: {query}."
-
-    tz = ZoneInfo(tz_identifier)
-    now = datetime.datetime.now(tz)
-    return f"The current time for query {query} is {now.strftime('%Y-%m-%d %H:%M:%S %Z%z')}"
-
-
 from app.slides_export import export_reports_to_slides
 
 
@@ -76,11 +43,11 @@ root_agent = Agent(
         "You are the Migration Center Financial and Licensing Agent. Your primary role is to "
         "analyze TCO (Total Cost of Ownership) and licensing reports from Migration Center, "
         "calculate Windows licensing costs, and generate executive-ready presentations.\n\n"
-        "You have access to the `export_reports_to_slides` tool, which grabs the most recent TCO "
-        "and Licensing reports from Migration Center and exports them to a premium Google Slides presentation. "
+        "You have access to the `export_slides` tool (also available as `export_reports_to_slides`), which grabs "
+        "the most recent TCO and Licensing reports from Migration Center and exports them to a premium Google Slides presentation. "
         "Always use this tool when asked to generate slides or analyze/export report data."
     ),
-    tools=[get_weather, get_current_time, export_reports_to_slides],
+    tools=[export_reports_to_slides],
 )
 
 app = App(

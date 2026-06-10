@@ -18,7 +18,7 @@ import google.auth
 from google.cloud import migrationcenter_v1
 from googleapiclient.discovery import build
 
-def export_reports_to_slides() -> str:
+def export_reports_to_slides(query: str = "") -> str:
     """Grabs the most recent TCO report and Licensing report from Migration Center,
     extracts the costs, calculates Windows OS credits, and exports to a premium Google Slides presentation.
     
