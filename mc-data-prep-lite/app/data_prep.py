@@ -1,0 +1,297 @@
+import os
+import re
+
+import numpy as np
+import pandas as pd
+
+
+def transform_infrastructure_data() -> str:
+    """Transforms raw infrastructure exports from VMware and Hyper-V into Migration Center compliant CSV formats.
+    
+    It reads data from 'data/exports' and templates from 'data/templates',
+    and generates 'vmInfo.csv' and 'diskInfo.csv' in 'data/output'.
+    
+    Returns:
+        A string indicating success or failure.
+    """
+    base_dir = os.path.join(os.path.dirname(__file__), "data")
+    exports_dir = os.path.join(base_dir, "exports")
+    templates_dir = os.path.join(base_dir, "templates")
+    output_dir = os.path.join(base_dir, "output")
+
+    # Ensure output dir exists
+    os.makedirs(output_dir, exist_ok=True)
+
+    def clean_number(val):
+        if pd.isna(val):
+            return np.nan
+        if isinstance(val, str):
+            val = val.replace(",", "").replace('"', "")
+            try:
+                return float(val)
+            except ValueError:
+                return np.nan
+        return float(val)
+
+    def extract_vm_name(path):
+        if pd.isna(path):
+            return "unknown-vm"
+        # Extract folder name first (between ']' and '/')
+        match = re.search(r"\]\s*([^/]+)/", path)
+        if match:
+            name = match.group(1).strip()
+        else:
+            # Fallback to filename without extension
+            match = re.search(r"([^/]+)\.(vmx|vmdk)$", path)
+            if match:
+                name = match.group(1)
+                name = re.sub(r'_\d+$', '', name)
+            else:
+                name = "unknown-vm"
+
+        # Clean name to only allow alphanumeric, underscores, and dashes
+        name = re.sub(r'[^a-zA-Z0-9_-]', '_', name)
+        return name
+
+    def process_vmware():
+        vinfo_path = os.path.join(exports_dir, "vmware-exports", "RVTools_export_gcp.xlsx - vInfo.csv")
+        vdisk_path = os.path.join(exports_dir, "vmware-exports", "RVTools_export_gcp.xlsx - vDisk.csv")
+
+        if not os.path.exists(vinfo_path):
+            print(f"VMware vInfo file not found: {vinfo_path}")
+            return pd.DataFrame(), pd.DataFrame()
+
+        df_info = pd.read_csv(vinfo_path)
+        df_info["MachineName"] = df_info["Path"].apply(extract_vm_name)
+        df_info["MachineId"] = df_info["MachineName"]
+
+        df_info["MemoryMiB"] = df_info["Memory"].apply(clean_number)
+        df_info["MemoryGiB"] = df_info["MemoryMiB"] / 1024.0
+        df_info["AllocatedProcessorCoreCount"] = df_info["CPUs"]
+        df_info["OsName"] = df_info["OS according to the configuration file"]
+
+        if os.path.exists(vdisk_path):
+            df_disk = pd.read_csv(vdisk_path)
+            df_disk["Path_Name"] = df_disk["Path"].apply(extract_vm_name)
+            df_disk["MachineId"] = df_disk["Path_Name"]
+
+            df_disk["CapacityMiB"] = df_disk["Capacity MiB"].apply(clean_number)
+            df_disk["SizeInGib"] = df_disk["CapacityMiB"] / 1024.0
+
+            disk_sum = df_disk.groupby("MachineId")["SizeInGib"].sum().reset_index()
+            disk_sum.rename(columns={"SizeInGib": "TotalDiskAllocatedGiB"}, inplace=True)
+
+            df_vm = pd.merge(df_info, disk_sum, on="MachineId", how="left")
+
+            disk_info = pd.DataFrame()
+            disk_info["MachineId"] = df_disk["MachineId"]
+            disk_info["DiskLabel"] = df_disk["Disk"]
+            disk_info["SizeInGib"] = df_disk["SizeInGib"]
+            disk_info["UsedInGib"] = 0
+            disk_info["StorageTypeLabel"] = df_disk["Label"]
+        else:
+            print(f"VMware vDisk file not found: {vdisk_path}. Proceeding with vInfo only.")
+            df_vm = df_info.copy()
+            df_vm["TotalDiskAllocatedGiB"] = 0
+            disk_info = pd.DataFrame()
+
+        vm_info = pd.DataFrame()
+        vm_info["MachineId"] = df_vm["MachineId"]
+        vm_info["MachineName"] = df_vm["MachineName"]
+        vm_info["TotalDiskAllocatedGiB"] = df_vm["TotalDiskAllocatedGiB"]
+        vm_info["AllocatedProcessorCoreCount"] = df_vm["AllocatedProcessorCoreCount"]
+        vm_info["MemoryGiB"] = df_vm["MemoryGiB"]
+
+        def map_os_type(os_name):
+            os_name = str(os_name).lower()
+            if 'windows' in os_name: return 'Windows'
+            if 'linux' in os_name or 'ubuntu' in os_name or 'rhel' in os_name or 'debian' in os_name: return 'Linux'
+            return 'Linux'
+
+        vm_info["OsName"] = df_vm["OsName"]
+        vm_info["OsType(optional)"] = df_vm["OsName"].apply(map_os_type)
+        vm_info["IsPhysical"] = "FALSE"
+        vm_info["MachineTypeLabel(optional)"] = "VMware VM"
+
+        return vm_info, disk_info
+
+    def process_hyperv():
+        hv_path = os.path.join(exports_dir, "hyperv-exports", "hvvmInfogcp.csv")
+        if not os.path.exists(hv_path):
+            print(f"Hyper-V export file not found: {hv_path}")
+            return pd.DataFrame(), pd.DataFrame()
+
+        df = pd.read_csv(hv_path)
+        if df.empty:
+            return pd.DataFrame(), pd.DataFrame()
+
+        df["MachineId"] = [f"hv-vm-{i}" for i in range(1, len(df) + 1)]
+        df["MachineName"] = df["MachineId"]
+
+        vm_info = pd.DataFrame()
+        vm_info["MachineId"] = df["MachineId"]
+        vm_info["MachineName"] = df["MachineName"]
+        vm_info["TotalDiskAllocatedGiB"] = df["TotalDiskAllocatedGiB"]
+        vm_info["TotalDiskUsedGiB"] = df["TotalDiskUsedGiB"]
+        vm_info["AllocatedProcessorCoreCount"] = df["AllocatedProcessorCoreCount"]
+        vm_info["MemoryGiB"] = df["MemoryGiB"]
+        vm_info["OsName"] = df["OsName"]
+
+        def map_os_type(os_name):
+            os_name = str(os_name).lower()
+            if 'windows' in os_name: return 'Windows'
+            if 'linux' in os_name or 'ubuntu' in os_name or 'rhel' in os_name or 'debian' in os_name: return 'Linux'
+            return 'Linux'
+
+        vm_info["OsType(optional)"] = df["OsName"].apply(map_os_type)
+        vm_info["IsPhysical"] = "FALSE"
+        vm_info["MachineTypeLabel(optional)"] = "Hyper-V VM"
+
+        disk_info = pd.DataFrame()
+        disk_info["MachineId"] = df["MachineId"]
+        disk_info["DiskLabel"] = "disk-0"
+        disk_info["SizeInGib"] = df["TotalDiskAllocatedGiB"]
+        disk_info["UsedInGib"] = df["TotalDiskUsedGiB"]
+        disk_info["StorageTypeLabel"] = "Hyper-V"
+
+        return vm_info, disk_info
+
+    try:
+        vm_vmware, disk_vmware = process_vmware()
+        vm_hyperv, disk_hyperv = process_hyperv()
+
+        if vm_vmware.empty and vm_hyperv.empty:
+            return "Error: No data found in exports. Please ensure your RVTools or Hyper-V CSV files are in place."
+
+        vms = pd.concat([vm_vmware, vm_hyperv], ignore_index=True)
+        disks = pd.concat([disk_vmware, disk_hyperv], ignore_index=True)
+
+        tags_list = []
+        if not vm_vmware.empty:
+            tags_vmware = pd.DataFrame()
+            tags_vmware["MachineId"] = vm_vmware["MachineId"]
+            tags_vmware["Key"] = "source"
+            tags_vmware["Value"] = "vmware"
+            tags_list.append(tags_vmware)
+
+        if not vm_hyperv.empty:
+            tags_hyperv = pd.DataFrame()
+            tags_hyperv["MachineId"] = vm_hyperv["MachineId"]
+            tags_hyperv["Key"] = "source"
+            tags_hyperv["Value"] = "hyperv"
+            tags_list.append(tags_hyperv)
+
+        tags = pd.concat(tags_list, ignore_index=True) if tags_list else pd.DataFrame(columns=["MachineId", "Key", "Value"])
+
+        vm_template = pd.read_csv(os.path.join(templates_dir, "vmInfo.csv"), nrows=0)
+        disk_template = pd.read_csv(os.path.join(templates_dir, "diskInfo.csv"), nrows=0)
+
+        vms_final = pd.DataFrame(columns=vm_template.columns)
+        for col in vms.columns:
+            if col in vms_final.columns:
+                vms_final[col] = vms[col]
+
+        numeric_cols = [
+            "TotalDiskAllocatedGiB", "TotalDiskUsedGiB",
+            "AllocatedProcessorCoreCount", "MemoryGiB"
+        ]
+        for col in numeric_cols:
+            if col in vms_final.columns:
+                vms_final[col] = pd.to_numeric(vms_final[col], errors='coerce').fillna(0)
+
+        disks_final = pd.DataFrame(columns=disk_template.columns)
+        for col in disks.columns:
+            if col in disks_final.columns:
+                disks_final[col] = disks[col]
+
+        if "SizeInGib" in disks_final.columns:
+            disks_final["SizeInGib"] = pd.to_numeric(disks_final["SizeInGib"], errors='coerce').fillna(0)
+        if "UsedInGib" in disks_final.columns:
+            disks_final["UsedInGib"] = pd.to_numeric(disks_final["UsedInGib"], errors='coerce').fillna(0)
+
+        vms_final.to_csv(os.path.join(output_dir, "vmInfo.csv"), index=False)
+        disks_final.to_csv(os.path.join(output_dir, "diskInfo.csv"), index=False)
+        tags.to_csv(os.path.join(output_dir, "tagInfo.csv"), index=False)
+
+        return f"Successfully generated files in {output_dir}"
+    except Exception as e:
+        return f"Failed to transform data: {e!s}"
+
+def add_labels_to_tag_file(machine_ids: list[str], key: str, value: str) -> str:
+    """Adds or updates a label (key-value pair) for a list of machine IDs in the output tagInfo.csv."""
+    base_dir = os.path.join(os.path.dirname(__file__), "data")
+    template_path = os.path.join(base_dir, "templates", "tagInfo.csv")
+    output_path = os.path.join(base_dir, "output", "tagInfo.csv")
+
+    if not os.path.exists(template_path):
+        return f"Error: Template file {template_path} not found."
+
+    try:
+        template_df = pd.read_csv(template_path, nrows=0)
+        expected_headers = list(template_df.columns)
+    except Exception as e:
+        return f"Error: Failed to read template file: {e}"
+
+    if os.path.exists(output_path):
+        try:
+            tags_df = pd.read_csv(output_path)
+        except Exception as e:
+            return f"Error: Failed to read existing tagInfo.csv: {e}"
+    else:
+        tags_df = pd.DataFrame(columns=expected_headers)
+
+    id_col = "MachineId"
+    for col in expected_headers:
+        if col.lower().replace(" ", "").replace("_", "") in ["machineid", "machine"]:
+            id_col = col
+            break
+
+    key_col = "Key"
+    for col in expected_headers:
+        if col.lower().replace(" ", "").replace("_", "") in ["key", "tagcategory", "category"]:
+            key_col = col
+            break
+
+    val_col = "Value"
+    for col in expected_headers:
+        if col.lower().replace(" ", "").replace("_", "") in ["value", "tagvalue"]:
+            val_col = col
+            break
+
+    new_rows = []
+    for mid in machine_ids:
+        if not tags_df.empty and id_col in tags_df.columns and key_col in tags_df.columns:
+            tags_df = tags_df[~((tags_df[id_col] == mid) & (tags_df[key_col] == key))]
+
+        new_rows.append({
+            id_col: mid,
+            key_col: key,
+            val_col: value
+        })
+
+    if new_rows:
+        new_df = pd.DataFrame(new_rows)
+        new_df = new_df[expected_headers]
+        tags_df = pd.concat([tags_df, new_df], ignore_index=True)
+
+    try:
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        tags_df.to_csv(output_path, index=False)
+        return f"Successfully added/updated label '{key}={value}' for {len(machine_ids)} servers in {output_path}."
+    except Exception as e:
+        return f"Error: Failed to save tagInfo.csv: {e}"
+
+def get_parsed_vms() -> str:
+    """Retrieves the list of parsed VMs from the generated vmInfo.csv."""
+    vm_path = os.path.join(os.path.dirname(__file__), "data", "output", "vmInfo.csv")
+
+    if not os.path.exists(vm_path):
+        return "Error: No parsed VMs found in data/output/vmInfo.csv. Please run transform_infrastructure_data first."
+
+    try:
+        df = pd.read_csv(vm_path)
+        cols = ["MachineId", "MachineName", "OsType(optional)", "MachineTypeLabel(optional)"]
+        cols = [c for c in cols if c in df.columns]
+        return df[cols].to_csv(index=False)
+    except Exception as e:
+        return f"Error: Failed to read VM list: {e}"

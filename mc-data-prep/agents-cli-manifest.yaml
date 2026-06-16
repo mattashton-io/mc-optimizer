@@ -1,0 +1,12 @@
+name: mc-data-prep
+description: Simple ReAct agent
+base_template: adk
+agent_directory: app
+generated_at: '2026-05-07T20:06:56.821647+00:00'
+acli_version: 0.4.0
+create_params:
+  deployment_target: cloud_run
+  session_type: in_memory
+  cicd_runner: skip
+  include_data_ingestion: false
+  datastore: none
