@@ -36,7 +36,7 @@ AGENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # In-memory session configuration - no persistent storage
 session_service_uri = None
 
-artifact_service_uri = f"gs://{logs_bucket_name}" if logs_bucket_name else None
+artifact_service_uri = f"gs://{logs_bucket_name}" if logs_bucket_name else "memory://"
 
 app: FastAPI = get_fast_api_app(
     agents_dir=AGENT_DIR,

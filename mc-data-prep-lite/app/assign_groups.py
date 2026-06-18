@@ -1,15 +1,15 @@
 import os
+import io
 
 import google.auth
 import google.auth.transport.requests
 import pandas as pd
 import requests
 from google.cloud import migrationcenter_v1
+from google.adk.tools import ToolContext
 
-from .app_utils.gcs_utils import get_bucket_name
 
-
-def assign_assets_to_groups() -> str:
+async def assign_assets_to_groups(tool_context: ToolContext) -> str:
     """Assigns Migration Center assets to groups based on their source (VMware vs Hyper-V) as defined in tagInfo.csv.
     
     Returns:
@@ -20,15 +20,13 @@ def assign_assets_to_groups() -> str:
         print(msg)
         logs.append(msg)
 
-    bucket_name = get_bucket_name()
-    tag_file = f"gs://{bucket_name}/output/tagInfo.csv"
-
-    # Removed: if not os.path.exists(tag_file): ...
-
     try:
-        df_tags = pd.read_csv(tag_file)
+        part = await tool_context.load_artifact("tagInfo.csv")
+        if not part or not part.inline_data or not part.inline_data.data:
+            return "Error: tagInfo.csv not found in session artifacts. Please run data prep first."
+        df_tags = pd.read_csv(io.BytesIO(part.inline_data.data))
     except Exception as e:
-        return f"Error: Failed to read tagInfo.csv from GCS ({tag_file}): {e}. Please run data prep first."
+        return f"Error: Failed to read tagInfo.csv from session artifacts: {e}."
 
     project_id = os.environ.get("GCP_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT")
     location = os.environ.get("GCP_LOCATION") or os.environ.get("GOOGLE_CLOUD_LOCATION") or "us-central1"

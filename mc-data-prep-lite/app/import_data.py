@@ -5,23 +5,15 @@ import time
 import google.auth
 import requests
 from google.cloud import migrationcenter_v1
+from google.adk.tools import ToolContext
 
-from .app_utils.gcs_utils import download_from_gcs, get_bucket_name
 
-
-def import_data_to_migration_center() -> str:
-    """Imports generated CSV files (vmInfo.csv, diskInfo.csv, tagInfo.csv) from GCS into Migration Center.
-    
-    It reads project and location from environment variables GCP_PROJECT_ID (or GOOGLE_CLOUD_PROJECT) 
-    and GCP_LOCATION (or GOOGLE_CLOUD_LOCATION).
-    It reads files from 'gs://<bucket>/output' and uploads them to a new import job.
+async def import_data_to_migration_center(tool_context: ToolContext) -> str:
+    """Imports generated CSV files (vmInfo.csv, diskInfo.csv, tagInfo.csv) from session artifacts into Migration Center.
     
     Returns:
         A string indicating success or failure.
     """
-    bucket_name = get_bucket_name()
-    gcs_output_prefix = "output/"
-
     project_id = os.environ.get("GCP_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT")
     location = os.environ.get("GCP_LOCATION") or os.environ.get("GOOGLE_CLOUD_LOCATION") or "us-central1"
 
@@ -39,7 +31,11 @@ def import_data_to_migration_center() -> str:
 
     print(f"Using project: {project_id}, location: {location}")
 
-    client = migrationcenter_v1.MigrationCenterClient()
+    # Initialize Migration Center client
+    try:
+        client = migrationcenter_v1.MigrationCenterClient()
+    except Exception as e:
+        return f"Error initializing Migration Center client: {e}"
 
     job_id = f"manual-import-{int(time.time())}"
     parent = f"projects/{project_id}/locations/{location}"
@@ -55,7 +51,7 @@ def import_data_to_migration_center() -> str:
         source = source_op.result()
         print(f"Asset source created: {source.name}")
     except Exception as e:
-        return f"Error: Failed to create asset source in project '{project_id}' at '{location}': {e}. Please verify your GCP_PROJECT_ID and GCP_LOCATION environment variables."
+        return f"Error: Failed to create asset source in project '{project_id}' at '{location}': {e}."
 
     import_job = {
         "display_name": f"Manual Import {time.strftime('%Y%m%d-%H%M%S')}",
@@ -82,14 +78,27 @@ def import_data_to_migration_center() -> str:
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         for file_name in files:
-            gcs_path = f"{gcs_output_prefix}{file_name}"
             local_path = os.path.join(tmp_dir, file_name)
 
-            print(f"Downloading {file_name} from GCS...")
+            print(f"Loading {file_name} from session artifacts...")
             try:
-                download_from_gcs(gcs_path, local_path)
+                part = await tool_context.load_artifact(file_name)
+                if not part:
+                    raise ValueError("Artifact not found in session.")
+                
+                content_bytes = None
+                if part.inline_data:
+                    content_bytes = part.inline_data.data
+                elif part.text:
+                    content_bytes = part.text.encode("utf-8")
+                
+                if not content_bytes:
+                    raise ValueError("Artifact is empty.")
+
+                with open(local_path, "wb") as f:
+                    f.write(content_bytes)
             except Exception as e:
-                print(f"File {file_name} not found in GCS or error: {e}")
+                print(f"File {file_name} not found or error loading from artifacts: {e}")
                 if file_name in ["vmInfo.csv", "diskInfo.csv"]:
                      failed_files.append(file_name)
                 continue
@@ -201,4 +210,4 @@ def import_data_to_migration_center() -> str:
     except Exception as e:
         return f"Error: Run failed: {e}"
 
-    return f"Success: Data imported and processed in job {job_name}. Uploaded files: {uploaded_files}. Assets are now available in Migration Center. If you added labels/tags, please run the 'add_labels_post_import' tool to ensure they are synced to the live assets."
+    return f"Success: Data imported and processed in job {job_name}. Uploaded files: {uploaded_files}. Assets are now available in Migration Center."

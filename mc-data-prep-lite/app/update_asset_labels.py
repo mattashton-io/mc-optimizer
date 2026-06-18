@@ -1,17 +1,17 @@
 import os
 import re
+import io
 
 import google.auth
 import google.auth.transport.requests
 import pandas as pd
 from google.cloud import migrationcenter_v1
 from google.protobuf import field_mask_pb2
+from google.adk.tools import ToolContext
 
-from .app_utils.gcs_utils import get_bucket_name
 
-
-def add_labels_post_import() -> str:
-    """Retrieves assets from Migration Center and updates their labels post-import based on tagInfo.csv in GCS.
+async def add_labels_post_import(tool_context: ToolContext) -> str:
+    """Retrieves assets from Migration Center and updates their labels post-import based on tagInfo.csv in session artifacts.
     
     Returns:
         A string summary of the execution log.
@@ -21,13 +21,13 @@ def add_labels_post_import() -> str:
         print(msg)
         logs.append(msg)
 
-    bucket_name = get_bucket_name()
-    tag_file = f"gs://{bucket_name}/output/tagInfo.csv"
-
     try:
-        df = pd.read_csv(tag_file)
+        part = await tool_context.load_artifact("tagInfo.csv")
+        if not part or not part.inline_data or not part.inline_data.data:
+            return "Error: tagInfo.csv not found in session artifacts. Please run data prep first."
+        df = pd.read_csv(io.BytesIO(part.inline_data.data))
     except Exception as e:
-        return f"Error: Failed to read tagInfo.csv from GCS ({tag_file}): {e}. Please run data prep first."
+        return f"Error: Failed to read tagInfo.csv from session artifacts: {e}."
 
     if df.empty:
         return "Info: tagInfo.csv is empty. No labels to apply."

@@ -1,0 +1,10 @@
+The primary goal of this agent is to allow users to upload infrastructure export spreadsheets (.xlsx and .csv files from RVTools or Hyper-V) directly into the ADK web chat, process them, and prepare them for import into GCP Migration Center.
+
+1. **Model Configuration**: Configure the root agent to use `Gemini(model="gemini-flash-latest")`. 
+2. **ADK Artifacts & File Uploads**: Implement tools to handle file uploads natively via ADK Artifacts. When a user uploads a file in the web chat, the agent needs a tool designed to accept the artifact metadata/reference.
+3. **In-Memory Processing**: Implement an `inMemoryService` (or equivalent in-memory buffer approach using `io.BytesIO` or `pandas`) to load the contents of the uploaded artifact directly into memory. Do not save the uploaded files to the local disk prior to transformation.
+4. **Tool Chain**: 
+    - Create a tool `process_uploaded_infrastructure_file(artifact_id: str, format_type: str)` that retrieves the file via the ADK artifacts API, loads it via the in-memory service, and passes the dataframe to the existing transformation logic.
+    - Include the integration logic required to eventually pass this processed data to the `import_data_to_migration_center` function.
+5. **Security & Environment**: Ensure that authentication relies on Google Cloud Application Default Credentials. If any additional environment variables or API keys are required, configure the app to retrieve them exclusively from Google Cloud Secret Manager. Do not write logic that stores or reads raw API keys from a local `.env` file.
+6. **Instructions**: Write a clear system instruction for the agent explaining that it should ask the user to upload their RVTools or Hyper-V file to the chat, identify the format, process the artifact in memory, and stage it for Migration Center import.

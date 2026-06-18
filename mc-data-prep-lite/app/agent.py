@@ -10,7 +10,6 @@
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
 # limitations under the License.
 
 import datetime
@@ -23,17 +22,29 @@ from typing_extensions import override
 from google.adk.agents import Agent
 from google.adk.apps import App
 from google.adk.models import Gemini
+from google.adk.plugins.save_files_as_artifacts_plugin import SaveFilesAsArtifactsPlugin
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 
-from .data_prep import transform_infrastructure_data, add_labels_to_tag_file, get_parsed_vms, upload_file_to_gcs
+from .data_prep import (
+    process_uploaded_infrastructure_file, 
+    add_labels_to_tag_file, 
+    get_parsed_vms, 
+    upload_file_to_gcs
+)
 from .import_data import import_data_to_migration_center
 from .assign_groups import assign_assets_to_groups
 from .update_asset_labels import add_labels_post_import
 
-_, project_id = google.auth.default()
-os.environ["GOOGLE_CLOUD_PROJECT"] = project_id
+# Attempt to get project ID without triggering full auth if possible,
+# but at module level it's usually okay as long as we don't open connections.
+try:
+    _, project_id = google.auth.default()
+    os.environ["GOOGLE_CLOUD_PROJECT"] = project_id
+except Exception:
+    pass
+
 os.environ["GOOGLE_CLOUD_LOCATION"] = "global"
 os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "True"
 
@@ -44,7 +55,9 @@ class ResilientGemini(Gemini):
     async def generate_content_async(
         self, llm_request: LlmRequest, stream: bool = False
     ) -> AsyncGenerator[LlmResponse, None]:
-        # Filter unsupported mime types
+        # Create a deep copy to avoid mutating the original request
+        llm_request = llm_request.model_copy(deep=True)
+        
         for content in llm_request.contents:
             if not content.parts:
                 continue
@@ -58,14 +71,11 @@ class ResilientGemini(Gemini):
                     mime_type = part.file_data.mime_type
                 
                 if mime_type:
-                    # Normalize CSV mime type
                     if "csv" in mime_type.lower():
                         if part.inline_data: part.inline_data.mime_type = "text/csv"
                         if part.file_data: part.file_data.mime_type = "text/csv"
                         mime_type = "text/csv"
                     
-                    # Gemini 1.5 supported types
-                    # https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/gemini#supported_mime_types
                     supported = (
                         mime_type.startswith("image/") or
                         mime_type.startswith("video/") or
@@ -75,7 +85,13 @@ class ResilientGemini(Gemini):
                     )
                     
                     if not supported:
-                        # Skip unsupported binary files (like .xlsx) to avoid 400 INVALID_ARGUMENT
+                        filename = "uploaded_file"
+                        if part.file_data:
+                            filename = part.file_data.file_uri.split("/")[-1]
+                        elif part.inline_data:
+                            filename = "binary_artifact"
+                        
+                        filtered_parts.append(types.Part(text=f"[Artifact Uploaded: {filename}]"))
                         continue
                 
                 filtered_parts.append(part)
@@ -91,43 +107,40 @@ root_agent = Agent(
         retry_options=types.HttpRetryOptions(attempts=3),
     ),
     instruction="""You are a GCP Migration Data Prep Agent. 
-Your goal is to help users prepare, tag, import, and group their on-premises workload data for Migration Center.
-You have access to tools for:
-1. Uploading files to a GCS bucket. Use this whenever a user provides a file in the chat that needs to be processed.
-2. Transforming raw infrastructure exports (VMware, Hyper-V) stored in GCS into MC-compliant CSV formats in GCS.
-3. Getting a list of all parsed VMs from GCS with their IDs and attributes.
-4. Adding/updating labels (tags) for specific VM IDs in the `tagInfo.csv` file in GCS.
-5. Importing generated CSV files from GCS into Migration Center. This tool uploads data from GCS to a new import job.
-6. Assigning imported Migration Center assets into groups (e.g. VMware vs Hyper-V groups).
-7. Syncing/Applying asset labels in Migration Center based on the `tagInfo.csv` in GCS. This should be called AFTER the import is completed to ensure labels appear in the "Labels" column in Migration Center.
+Your goal is to help users prepare, tag, import, and group their on-premises workload data (VMware or Hyper-V) for Migration Center.
 
-When a user uploads a file to the chat, you MUST first upload it to the GCS bucket using `upload_file_to_gcs`. 
-Place VMware exports in `exports/vmware-exports/` and Hyper-V exports in `exports/hyperv-exports/`.
+### Important: Handling Uploads
+When a user uploads a file, you might see a placeholder like `[Artifact Uploaded: filename.xlsx]`. 
+This indicates that the file was successfully uploaded to the chat session as an ADK Artifact.
+- The `artifact_id` is the filename shown in the placeholder (e.g., `filename.xlsx`).
+- You MUST use the `process_uploaded_infrastructure_file` tool to process these artifacts.
 
-When asked to label servers, you should:
-a) Use `add_labels_to_tag_file` to update the CSV in GCS.
-b) Run the import using `import_data_to_migration_center`.
-c) Use `add_labels_post_import` AFTER the import succeeds to apply those labels to the live assets in Migration Center.
+### Workflow:
+1. **Request Upload**: Ask the user to upload their RVTools (.xlsx or .csv) or Hyper-V (.csv) export file directly to the chat.
+2. **Process Artifact**: Once a file is uploaded, call `process_uploaded_infrastructure_file`. This transforms the data and saves it to session artifacts.
+3. **Review Data**: Use `get_parsed_vms` to show the user the list of parsed VMs.
+4. **Labeling (Optional)**: Use `add_labels_to_tag_file` if the user wants to add labels.
+5. **Import**: Use `import_data_to_migration_center` to create the import job and upload the data.
+6. **Finalize**: 
+   - Use `assign_assets_to_groups` to group assets.
+   - Use `add_labels_post_import` AFTER the import succeeds to apply labels.
 
-Use the upload_file_to_gcs tool to move local files or chat-provided files to the project GCS bucket.
-Use the transform_infrastructure_data tool when asked to process or ingest CSV files from RVTools or Hyper-V. It will look for files in GCS.
-Use the get_parsed_vms tool when asked to show, list, or query the parsed VMs and find their MachineIds.
-Use the add_labels_to_tag_file tool to add labels to the tagInfo.csv in GCS.
-Use the import_data_to_migration_center tool to upload or import the generated data from GCS.
-Use the assign_assets_to_groups tool to group assets inside Migration Center.
-Use the add_labels_post_import tool to sync labels from tagInfo.csv to the live assets in Migration Center AFTER import.""",
+### Guidelines:
+- Do NOT save uploaded files to local disk.
+- All intermediate data (vmInfo.csv, etc.) is stored as session artifacts.""",
     tools=[
-        upload_file_to_gcs,
-        transform_infrastructure_data, 
+        process_uploaded_infrastructure_file,
         get_parsed_vms,
         add_labels_to_tag_file,
         import_data_to_migration_center, 
         assign_assets_to_groups,
-        add_labels_post_import
+        add_labels_post_import,
+        upload_file_to_gcs
     ],
 )
 
 app = App(
     root_agent=root_agent,
     name="app",
+    plugins=[SaveFilesAsArtifactsPlugin()],
 )

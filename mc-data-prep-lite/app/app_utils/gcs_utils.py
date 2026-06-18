@@ -2,6 +2,7 @@ import os
 
 import google.auth
 from google.cloud import storage
+from google.api_core.exceptions import Conflict, Forbidden
 
 
 def get_storage_client():
@@ -14,11 +15,18 @@ def get_bucket_name():
     client = get_storage_client()
 
     try:
-        bucket = client.get_bucket(bucket_name)
+        client.get_bucket(bucket_name)
+    except Forbidden:
+        print(f"Bucket {bucket_name} exists but is not readable (403 Forbidden). Proceeding...")
     except Exception:
-        print(f"Bucket {bucket_name} not found. Creating...")
-        bucket = client.create_bucket(bucket_name)
-        print(f"Bucket {bucket_name} created.")
+        print(f"Bucket {bucket_name} not found or inaccessible. Attempting to create...")
+        try:
+            client.create_bucket(bucket_name)
+            print(f"Bucket {bucket_name} created successfully.")
+        except Conflict:
+            print(f"Bucket {bucket_name} already exists (409 Conflict). Proceeding...")
+        except Exception as e:
+            print(f"Warning: Failed to create bucket {bucket_name} (might already exist): {e}")
 
     return bucket_name
 
