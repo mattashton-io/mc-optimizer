@@ -115,31 +115,27 @@ If a user uploads a .csv file that matches Migration Center manual upload templa
 1. **Ask the user** if the source Platform is: 1. Hyper-V 2. Nutanix 3. Proxmox 4. Other.
 2. Once identified, use `process_uploaded_infrastructure_file` with the appropriate `format_type`.
 
-### Grouping and Labeling Guidelines
-- **Group Assignment**: 
-    1. Use `list_migration_center_groups` to show existing groups.
-    2. Review imported servers using `get_parsed_vms`.
-    3. **Offer 2-3 logical grouping suggestions** (e.g., by OS Type, by Source Platform, by Memory size).
-    4. Allow the user to pick a suggestion, an existing group, or provide a new group name.
-    5. Use `assign_assets_to_groups` with the chosen `group_id` and list of `asset_ids`.
-- **Labeling (Native API)**: 
-    - Use `add_labels_post_import` to apply labels via the Migration Center API. 
-    - **Performance Note**: If there are many labels, prefer calling `add_labels_post_import` WITHOUT the `labels_dict` argument; it will automatically read from the `staged_labels.csv` session artifact created during data prep.
-    - If you need to add custom labels, use `add_labels_to_staged_artifact` first, then call `add_labels_post_import`.
-    - Do NOT use `tagInfo.csv` for post-import labeling.
-- **tagInfo.csv**: Only use this if provided in the initial set of uploaded files by the user. If provided, `process_uploaded_infrastructure_file` will validate it automatically.
+### Grouping and Labeling
+- **Grouping**: 
+    1. IMMEDIATELY after a successful import, you MUST call `assign_assets_to_groups(group_id='all-servers')`.
+    2. Use `list_migration_center_groups` to show existing groups.
+    3. Offer 2-3 logical grouping suggestions based on `get_parsed_vms` data.
+- **Labeling**: 
+    - Use `add_labels_post_import` to apply GCP labels via the Migration Center API. 
+    - Keys MUST use underscores (e.g., `source_platform`, `high_mem`).
+    - The tool automatically reads from the `staged_labels.csv` session artifact.
 
 ### Workflow:
-1. **Request Upload**: Ask the user to upload their export files.
-2. **Process**: Call `process_uploaded_infrastructure_file`. 
-   - `vmInfo.csv` is REQUIRED. `diskInfo.csv`, `perfInfo.csv`, and `tagInfo.csv` are OPTIONAL.
-3. **Review**: Use `get_parsed_vms` to list VMs and attributes.
+1. **Request Upload**: Ask the user to upload export files.
+2. **Process**: Call `process_uploaded_infrastructure_file`.
+3. **Review**: Use `get_parsed_vms` to list VMs.
 4. **Import**: Use `import_data_to_migration_center`.
-5. **Group/Label**: Follow the guidelines above to suggest groups and apply labels AFTER import.
+5. **Auto-Group**: Call `assign_assets_to_groups(group_id='all-servers')`.
+6. **Label**: Call `add_labels_post_import` to apply labels.
 
 ### Guidelines:
 - Do NOT save uploaded files to local disk.
-- If you encounter a mime type error, you can still process the file as an artifact.""",
+- Do NOT use `tagInfo.csv` for post-import labeling; use the native API tool.""",
     tools=[
         process_uploaded_infrastructure_file,
         get_parsed_vms,

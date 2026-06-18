@@ -18,10 +18,6 @@ async def add_labels_post_import(
     """Updates labels for assets in Migration Center using native APIs.
 
     If labels_dict is not provided, it reads from the 'staged_labels.csv' session artifact.
-
-    Args:
-        tool_context: The ADK tool context.
-        labels_dict: Optional dictionary mapping MachineId to labels {key: value}.
     """
     logs = []
 
@@ -47,15 +43,13 @@ async def add_labels_post_import(
                         final_labels_dict[m_id] = {}
                     final_labels_dict[m_id][k] = v
                 log(f"Loaded labels for {len(final_labels_dict)} assets from session artifact.")
-            else:
-                log("No 'staged_labels.csv' artifact found.")
         except Exception as e:
-            log(f"Warning: Failed to load staged labels from artifact: {e}")
+            log(f"Warning: Failed to load staged labels: {e}")
 
     if not final_labels_dict:
-        return "Info: No labels found to apply. Please run 'process_uploaded_infrastructure_file' or 'add_labels_to_staged_artifact' first."
+        return "Info: No labels found to apply."
 
-    # 2. Setup GCS/MC Client
+    # 2. Setup MC Client
     project_id = os.environ.get("GCP_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT")
     location = os.environ.get("GCP_LOCATION") or os.environ.get("GOOGLE_CLOUD_LOCATION") or "us-central1"
     if location == "global": location = "us-central1"
@@ -79,53 +73,60 @@ async def add_labels_post_import(
         skipped_count = 0
         errors = []
 
-        # 3. Normalize Input
-        norm_dict = {}
-        for m_id, labels in final_labels_dict.items():
-            mid_low = m_id.lower()
-            norm_labels = {}
-            for k, v in labels.items():
-                k_clean = re.sub(r"[^a-z0-9_-]", "_", k.lower())
-                if k_clean and not k_clean[0].islower(): k_clean = "l_" + k_clean
-                v_clean = re.sub(r"[^a-z0-9_-]", "_", str(v).lower())
-                norm_labels[k_clean[:63]] = v_clean[:63]
-            norm_dict[mid_low] = norm_labels
+        def normalize_key(k: str) -> str:
+            # GCP Labels: Lowercase, alphanumeric, underscores or hyphens.
+            # Must start with a lowercase letter. Max 63 chars.
+            clean = re.sub(r"[^a-z0-9_-]", "_", k.lower())
+            if clean and not clean[0].islower():
+                clean = "l_" + clean
+            return clean[:63]
 
-        # 4. Apply Labels via API
+        # 3. Process Updates per Asset
         for asset in assets:
             asset_full_name = asset.name
             asset_id = asset.name.split("/")[-1].lower()
             
-            # Match by MachineId or common UUID patterns in MC
-            matched_labels = norm_dict.get(asset_id)
+            # Find metadata for this asset (case-insensitive ID match)
+            new_labels = None
+            for m_id, labels in final_labels_dict.items():
+                if m_id.lower() == asset_id:
+                    new_labels = labels
+                    break
             
-            if matched_labels:
-                current_labels = dict(asset.labels) if asset.labels else {}
-                needs_update = False
-                for k, v in matched_labels.items():
-                    if current_labels.get(k) != v:
-                        current_labels[k] = v
-                        needs_update = True
+            if not new_labels:
+                continue
 
-                if needs_update:
-                    log(f"Updating asset {asset_id}...")
-                    try:
-                        updated_asset = migrationcenter_v1.Asset()
-                        updated_asset.name = asset_full_name
-                        for k, v in current_labels.items():
-                            updated_asset.labels[k] = v
-                        
-                        update_mask = field_mask_pb2.FieldMask(paths=["labels"])
-                        client.update_asset(request=migrationcenter_v1.UpdateAssetRequest(
-                            asset=updated_asset, update_mask=update_mask
-                        ))
-                        updated_count += 1
-                    except Exception as ex:
-                        errors.append(f"Failed {asset_id}: {ex}")
-                else:
-                    skipped_count += 1
+            current_labels = dict(asset.labels) if asset.labels else {}
+            needs_update = False
 
-        summary = f"API Labeling Complete. Updated: {updated_count}, Skipped: {skipped_count}."
+            for raw_k, raw_v in new_labels.items():
+                k_norm = normalize_key(raw_k)
+                v_str = str(raw_v).lower()[:63]
+                v_norm = re.sub(r"[^a-z0-9_-]", "_", v_str)
+
+                if current_labels.get(k_norm) != v_norm:
+                    current_labels[k_norm] = v_norm
+                    needs_update = True
+
+            if needs_update:
+                log(f"Updating labels for asset {asset_id}...")
+                try:
+                    updated_asset = migrationcenter_v1.Asset()
+                    updated_asset.name = asset_full_name
+                    for k, v in current_labels.items():
+                        updated_asset.labels[k] = v
+                    
+                    update_mask = field_mask_pb2.FieldMask(paths=["labels"])
+                    client.update_asset(request=migrationcenter_v1.UpdateAssetRequest(
+                        asset=updated_asset, update_mask=update_mask
+                    ))
+                    updated_count += 1
+                except Exception as ex:
+                    errors.append(f"Failed {asset_id}: {ex}")
+            else:
+                skipped_count += 1
+
+        summary = f"Labeling Complete. Updated: {updated_count}, Skipped: {skipped_count}."
         if errors: summary += f" Errors: {len(errors)}"
         return summary + "\nLogs:\n" + "\n".join(logs)
 

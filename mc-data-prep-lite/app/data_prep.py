@@ -38,40 +38,45 @@ async def process_uploaded_infrastructure_file(
         is_generic_template = False
         is_tag_info = False
         if artifact_id.lower().endswith(".csv"):
-             with io.BytesIO(file_bytes) as f:
+            with io.BytesIO(file_bytes) as f:
                 header_line = f.readline().decode("utf-8").lower()
                 if "machineid" in header_line and "machinename" in header_line:
                     is_generic_template = True
-                elif "machineid" in header_line and "key" in header_line and "value" in header_line:
+                elif (
+                    "machineid" in header_line
+                    and "key" in header_line
+                    and "value" in header_line
+                ):
                     is_tag_info = True
 
-        # Handle tagInfo.csv specially (Objective 3 - use ONLY if provided)
+        # Handle tagInfo.csv specially
         if is_tag_info:
             with io.BytesIO(file_bytes) as f:
                 df_tags = pd.read_csv(f)
-            
+
             required_cols = ["MachineId", "Key", "Value"]
             if not all(col in df_tags.columns for col in required_cols):
                 return "Error: Uploaded tagInfo.csv is missing required columns (MachineId, Key, Value)."
-            
+
             def validate_tag(row):
                 key = str(row["Key"])
                 val = str(row["Value"])
-                if not re.match(r'^[a-z][a-z0-9_-]{0,62}$', key.lower()):
+                if not re.match(r"^[a-z][a-z0-9_-]{0,62}$", key.lower()):
                     return False
-                if not re.match(r'^[a-z0-9_-]{0,63}$', val.lower()):
+                if not re.match(r"^[a-z0-9_-]{0,63}$", val.lower()):
                     return False
                 return True
-            
+
             df_tags["valid"] = df_tags.apply(validate_tag, axis=1)
             if not df_tags["valid"].all():
                 invalid = df_tags[~df_tags["valid"]]
                 return f"Error: tagInfo.csv contains invalid tags. Examples: {invalid[['Key', 'Value']].head(2).to_dict()}"
-            
-            # Save as both tagInfo.csv (for import if needed) and staged_labels.csv (for API labeling)
+
             csv_content = df_tags[required_cols].to_csv(index=False)
             await tool_context.save_artifact("tagInfo.csv", types.Part(text=csv_content))
-            await tool_context.save_artifact("staged_labels.csv", types.Part(text=csv_content))
+            await tool_context.save_artifact(
+                "staged_labels.csv", types.Part(text=csv_content)
+            )
             return "Successfully validated and saved tagInfo.csv/staged_labels.csv as session artifacts."
 
         # In-memory processing for VM/Disk data
@@ -91,7 +96,11 @@ async def process_uploaded_infrastructure_file(
                 with io.BytesIO(file_bytes) as f:
                     df_info = pd.read_csv(f)
                     df_disk = pd.DataFrame()
-        elif is_generic_template or format_type.lower() in ["hyperv", "nutanix", "proxmox"]:
+        elif is_generic_template or format_type.lower() in [
+            "hyperv",
+            "nutanix",
+            "proxmox",
+        ]:
             with io.BytesIO(file_bytes) as f:
                 df_info = pd.read_csv(f)
                 df_disk = pd.DataFrame()
@@ -101,10 +110,14 @@ async def process_uploaded_infrastructure_file(
                 df_disk = pd.DataFrame()
 
         if df_info.empty:
-            return "Error: The uploaded file appears to be empty or could not be parsed."
+            return (
+                "Error: The uploaded file appears to be empty or could not be parsed."
+            )
 
         # Perform transformation logic
-        transformed = _transform_in_memory(df_info, df_disk, format_type.lower(), is_generic_template)
+        transformed = _transform_in_memory(
+            df_info, df_disk, format_type.lower(), is_generic_template
+        )
 
         # Save as artifacts
         await tool_context.save_artifact(
@@ -114,7 +127,7 @@ async def process_uploaded_infrastructure_file(
             await tool_context.save_artifact(
                 "diskInfo.csv", types.Part(text=transformed["disks"].to_csv(index=False))
             )
-        
+
         # Save generated tags to staged_labels.csv for API labeling
         await tool_context.save_artifact(
             "staged_labels.csv", types.Part(text=transformed["tags"].to_csv(index=False))
@@ -158,6 +171,7 @@ async def add_labels_to_staged_artifact(
 
         new_rows = []
         for mid in machine_ids:
+            # Deduplicate by MachineId and Key
             tags_df = tags_df[~((tags_df["MachineId"] == mid) & (tags_df["Key"] == key))]
             new_rows.append({"MachineId": mid, "Key": key, "Value": value})
 
@@ -173,20 +187,28 @@ async def add_labels_to_staged_artifact(
 
 
 def _transform_in_memory(
-    df_info: pd.DataFrame, df_disk: pd.DataFrame, source_type: str, is_generic: bool = False
+    df_info: pd.DataFrame,
+    df_disk: pd.DataFrame,
+    source_type: str,
+    is_generic: bool = False,
 ) -> dict[str, pd.DataFrame]:
     def clean_number(val):
-        if pd.isna(val): return np.nan
+        if pd.isna(val):
+            return np.nan
         if isinstance(val, str):
             val = val.replace(",", "").replace('"', "")
-            try: return float(val)
-            except ValueError: return np.nan
+            try:
+                return float(val)
+            except ValueError:
+                return np.nan
         return float(val)
 
     def extract_vm_name(path):
-        if pd.isna(path): return "unknown-vm"
+        if pd.isna(path):
+            return "unknown-vm"
         match = re.search(r"\]\s*([^/]+)/", path)
-        if match: return match.group(1).strip()
+        if match:
+            return match.group(1).strip()
         match = re.search(r"([^/]+)\.(vmx|vmdk)$", path)
         if match:
             name = match.group(1)
@@ -195,8 +217,10 @@ def _transform_in_memory(
 
     def map_os_type(os_name):
         os_name = str(os_name).lower()
-        if "windows" in os_name: return "Windows"
-        if any(x in os_name for x in ["linux", "ubuntu", "rhel", "debian"]): return "Linux"
+        if "windows" in os_name:
+            return "Windows"
+        if any(x in os_name for x in ["linux", "ubuntu", "rhel", "debian"]):
+            return "Linux"
         return "Linux"
 
     vm_info = pd.DataFrame()
@@ -279,7 +303,8 @@ def _transform_in_memory(
 
     tags = pd.DataFrame(columns=["MachineId", "Key", "Value"])
     tags["MachineId"] = vm_info["MachineId"]
-    tags["Key"] = "source-platform"
+    # Use underscore consistently to avoid duplicate-like behavior with source-platform
+    tags["Key"] = "source_platform"
     tags["Value"] = source_type
 
     return {"vms": vm_info, "disks": disk_info, "tags": tags}
