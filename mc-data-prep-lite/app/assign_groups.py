@@ -1,32 +1,71 @@
 import os
-import io
+from typing import List, Optional
 
 import google.auth
 import google.auth.transport.requests
-import pandas as pd
 import requests
 from google.cloud import migrationcenter_v1
 from google.adk.tools import ToolContext
 
 
-async def assign_assets_to_groups(tool_context: ToolContext) -> str:
-    """Assigns Migration Center assets to groups based on their source (VMware vs Hyper-V) as defined in tagInfo.csv.
+async def list_migration_center_groups(tool_context: ToolContext) -> str:
+    """Lists all existing groups in the Migration Center project.
     
     Returns:
-        A string summary of the execution log.
+        A list of group names and their display names.
+    """
+    project_id = os.environ.get("GCP_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT")
+    location = os.environ.get("GCP_LOCATION") or os.environ.get("GOOGLE_CLOUD_LOCATION") or "us-central1"
+
+    if location == "global":
+        location = "us-central1"
+
+    if not project_id:
+        try:
+            _, project_id = google.auth.default()
+        except Exception as e:
+            return f"Error: Failed to get GCP project ID: {e}"
+
+    try:
+        client = migrationcenter_v1.MigrationCenterClient()
+        parent = f"projects/{project_id}/locations/{location}"
+        
+        groups = client.list_groups(parent=parent)
+        group_list = []
+        for group in groups:
+            group_list.append(f"- ID: {group.name.split('/')[-1]}, Display Name: {group.display_name}")
+        
+        if not group_list:
+            return "No existing groups found in Migration Center."
+        
+        return "Existing Groups:\n" + "\n".join(group_list)
+    except Exception as e:
+        return f"Error listing groups: {e}"
+
+
+async def assign_assets_to_groups(
+    group_id: str, 
+    asset_ids: List[str], 
+    tool_context: ToolContext,
+    group_display_name: Optional[str] = None
+) -> str:
+    """Assigns specific assets to a group in Migration Center using native APIs.
+    
+    If the group does not exist, it will be created.
+
+    Args:
+        group_id: The ID of the group (e.g., 'web-servers').
+        asset_ids: A list of asset IDs to add to the group.
+        tool_context: The ADK tool context.
+        group_display_name: Optional display name for the group if it needs to be created.
+
+    Returns:
+        A string summary of the execution result.
     """
     logs = []
     def log(msg: str):
         print(msg)
         logs.append(msg)
-
-    try:
-        part = await tool_context.load_artifact("tagInfo.csv")
-        if not part or not part.inline_data or not part.inline_data.data:
-            return "Error: tagInfo.csv not found in session artifacts. Please run data prep first."
-        df_tags = pd.read_csv(io.BytesIO(part.inline_data.data))
-    except Exception as e:
-        return f"Error: Failed to read tagInfo.csv from session artifacts: {e}."
 
     project_id = os.environ.get("GCP_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT")
     location = os.environ.get("GCP_LOCATION") or os.environ.get("GOOGLE_CLOUD_LOCATION") or "us-central1"
@@ -40,15 +79,13 @@ async def assign_assets_to_groups(tool_context: ToolContext) -> str:
         except Exception as e:
             return f"Error: Failed to get default GCP project ID: {e}"
 
-    if not project_id:
-        return "Error: GCP_PROJECT_ID or GOOGLE_CLOUD_PROJECT environment variable not set and could not be determined."
-
     log(f"Using project: {project_id}, location: {location}")
 
-    log("Getting access token...")
+    # Get token for REST API (addAssets is often more reliable via REST for bulk)
     try:
         credentials, _ = google.auth.default()
-        credentials.refresh(google.auth.transport.requests.Request())
+        auth_req = google.auth.transport.requests.Request()
+        credentials.refresh(auth_req)
         token = credentials.token
     except Exception as e:
         return f"Error: Failed to get access token: {e}"
@@ -56,118 +93,63 @@ async def assign_assets_to_groups(tool_context: ToolContext) -> str:
     try:
         client = migrationcenter_v1.MigrationCenterClient()
         parent = f"projects/{project_id}/locations/{location}"
+        group_name = f"{parent}/groups/{group_id}"
 
-        groups = {
-            "vmware": "vmware-assets",
-            "hyperv": "hyperv-assets"
+        # 1. Ensure Group Exists
+        try:
+            client.get_group(name=group_name)
+            log(f"Group {group_id} already exists.")
+        except Exception:
+            log(f"Group {group_id} not found. Creating...")
+            try:
+                new_group = migrationcenter_v1.Group(display_name=group_display_name or group_id)
+                req = migrationcenter_v1.CreateGroupRequest(
+                    parent=parent,
+                    group=new_group,
+                    group_id=group_id
+                )
+                op = client.create_group(request=req)
+                res = op.result()
+                log(f"Group {group_id} created successfully: {res.name}")
+            except Exception as ce:
+                return f"Error: Failed to create group {group_id}: {ce}"
+
+        # 2. Add Assets to Group
+        if not asset_ids:
+            return f"Group '{group_id}' is ready, but no assets were provided to add."
+
+        log(f"Adding {len(asset_ids)} assets to group '{group_id}'...")
+        
+        # We need the full asset names
+        # Most of the time users provide IDs, so we might need to resolve them
+        # but if we assume they are already full names or IDs in the right format:
+        full_asset_names = []
+        for aid in asset_ids:
+            if aid.startswith("projects/"):
+                full_asset_names.append(aid)
+            else:
+                full_asset_names.append(f"{parent}/assets/{aid}")
+
+        url = f"https://migrationcenter.googleapis.com/v1/{group_name}:addAssets"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
         }
-
-        created_groups = {}
-
-        for key, group_id in groups.items():
-            group_name = f"{parent}/groups/{group_id}"
-            log(f"Checking if group {group_id} exists...")
-            try:
-                group = client.get_group(name=group_name)
-                log(f"Group {group_id} already exists.")
-                created_groups[key] = group_name
-            except Exception:
-                log(f"Group {group_id} not found. Attempting to create...")
-                try:
-                    new_group = migrationcenter_v1.Group(display_name=group_id)
-                    req = migrationcenter_v1.CreateGroupRequest(
-                        parent=parent,
-                        group=new_group,
-                        group_id=group_id
-                    )
-                    op = client.create_group(request=req)
-                    res = op.result()
-                    log(f"Group {group_id} created successfully: {res.name}")
-                    created_groups[key] = res.name
-                except Exception as ce:
-                    return f"Error: Failed to create group {group_id}: {ce}\nLogs so far:\n" + "\n".join(logs)
-
-        log("Listing assets from Migration Center...")
-        assets = client.list_assets(parent=parent)
-
-        id_col = None
-        for col in ["MachineId", "Machine Id", "Machine ID", "machine_id"]:
-            if col in df_tags.columns:
-                id_col = col
-                break
-        if not id_col:
-            id_col = df_tags.columns[0]
-
-        val_col = None
-        for col in ["Value", "Tag Value", "tag_value", "value"]:
-            if col in df_tags.columns:
-                val_col = col
-                break
-        if not val_col:
-            val_col = df_tags.columns[2] if len(df_tags.columns) > 2 else df_tags.columns[1]
-
-        vmware_assets = []
-        hyperv_assets = []
-
-        for asset in assets:
-            asset_id = asset.name.split('/')[-1]
-            matched = False
-            for _, row in df_tags.iterrows():
-                m_id = str(row[id_col])
-                source = str(row[val_col]).lower()
-
-                if asset_id == m_id or asset_id.lower() == m_id.lower():
-                    if source == "vmware":
-                        vmware_assets.append(asset.name)
-                    elif source == "hyperv":
-                        hyperv_assets.append(asset.name)
-                    matched = True
-                    break
-
-            if not matched:
-                if "uuid" not in asset.name and "hv-vm" not in asset.name:
-                     log(f"Could not match asset {asset.name} to any MachineId in tagInfo.csv")
-
-        def add_assets(group_name, asset_list, group_label) -> str:
-            if not asset_list:
-                log(f"No assets to add to {group_label}.")
-                return f"No assets to add to {group_label}."
-            log(f"Adding {len(asset_list)} assets to {group_label} group...")
-            url = f"https://migrationcenter.googleapis.com/v1/{group_name}:addAssets"
-            headers = {
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json"
-            }
-            body = {
-                "assets": {
-                    "assetIds": asset_list
-                },
-                "allowExisting": True
-            }
-            try:
-                resp = requests.post(url, headers=headers, json=body)
-                if resp.status_code == 200:
-                     log(f"Successfully added assets to {group_label} group.")
-                     return "Success"
-                else:
-                     error_msg = f"Failed to add assets to {group_label} group: {resp.status_code} - {resp.text}"
-                     log(error_msg)
-                     return error_msg
-            except Exception as e:
-                error_msg = f"Failed to add assets to {group_label} group: {e}"
-                log(error_msg)
-                return error_msg
-
-        vmware_res = add_assets(created_groups["vmware"], vmware_assets, "vmware-assets")
-        hyperv_res = add_assets(created_groups["hyperv"], hyperv_assets, "hyperv-assets")
-
-        if "Failed" in vmware_res or "Failed" in hyperv_res:
-            return "Completed with errors.\n" + "\n".join(logs)
-
-        return "Successfully completed group assignment.\n" + "\n".join(logs)
+        body = {
+            "assets": {
+                "assetIds": full_asset_names
+            },
+            "allowExisting": True
+        }
+        
+        resp = requests.post(url, headers=headers, json=body)
+        if resp.status_code == 200:
+             log(f"Successfully added assets to '{group_id}' group.")
+             return f"Success: Added {len(asset_ids)} assets to group '{group_id}'.\n" + "\n".join(logs)
+        else:
+             error_msg = f"Failed to add assets to group: {resp.status_code} - {resp.text}"
+             log(error_msg)
+             return error_msg
 
     except Exception as e:
-        return f"Error: Failed to list assets or process groups: {e}\nLogs:\n" + "\n".join(logs)
-
-if __name__ == "__main__":
-    print(assign_assets_to_groups())
+        return f"Error in group assignment: {e}\nLogs so far:\n" + "\n".join(logs)

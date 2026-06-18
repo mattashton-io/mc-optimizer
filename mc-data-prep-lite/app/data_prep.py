@@ -13,12 +13,9 @@ async def process_uploaded_infrastructure_file(
 ) -> str:
     """Processes an infrastructure export file in memory and saves it as session artifacts.
 
-    This tool transforms the data and saves 'vmInfo.csv', 'diskInfo.csv', and 'tagInfo.csv'
-    as artifacts in the current session.
-
     Args:
         artifact_id: The ID (filename) of the artifact in the ADK chat.
-        format_type: The source format ('vmware' or 'hyperv').
+        format_type: The source format ('vmware', 'hyperv', 'nutanix', 'proxmox', or others).
 
     Returns:
         A summary of the processed data.
@@ -37,7 +34,50 @@ async def process_uploaded_infrastructure_file(
         if not file_bytes:
             return f"Error: Could not retrieve data for artifact '{artifact_id}'."
 
-        # In-memory processing
+        # Detect structure
+        is_generic_template = False
+        is_tag_info = False
+        if artifact_id.lower().endswith(".csv"):
+             with io.BytesIO(file_bytes) as f:
+                header_line = f.readline().decode("utf-8").lower()
+                if "machineid" in header_line and "machinename" in header_line:
+                    is_generic_template = True
+                elif "machineid" in header_line and "key" in header_line and "value" in header_line:
+                    is_tag_info = True
+
+        # Handle tagInfo.csv specially (Objective 3 - use ONLY if provided)
+        if is_tag_info:
+            with io.BytesIO(file_bytes) as f:
+                df_tags = pd.read_csv(f)
+            
+            required_cols = ["MachineId", "Key", "Value"]
+            if not all(col in df_tags.columns for col in required_cols):
+                return "Error: Uploaded tagInfo.csv is missing required columns (MachineId, Key, Value)."
+            
+            def validate_tag(row):
+                key = str(row["Key"])
+                val = str(row["Value"])
+                if not re.match(r'^[a-z][a-z0-9_-]{0,62}$', key.lower()):
+                    return False
+                if not re.match(r'^[a-z0-9_-]{0,63}$', val.lower()):
+                    return False
+                return True
+            
+            df_tags["valid"] = df_tags.apply(validate_tag, axis=1)
+            if not df_tags["valid"].all():
+                invalid = df_tags[~df_tags["valid"]]
+                return f"Error: tagInfo.csv contains invalid tags. Examples: {invalid[['Key', 'Value']].head(2).to_dict()}"
+            
+            # Save as both tagInfo.csv (for import if needed) and staged_labels.csv (for API labeling)
+            csv_content = df_tags[required_cols].to_csv(index=False)
+            await tool_context.save_artifact("tagInfo.csv", types.Part(text=csv_content))
+            await tool_context.save_artifact("staged_labels.csv", types.Part(text=csv_content))
+            return "Successfully validated and saved tagInfo.csv/staged_labels.csv as session artifacts."
+
+        # In-memory processing for VM/Disk data
+        df_info = pd.DataFrame()
+        df_disk = pd.DataFrame()
+
         if format_type.lower() == "vmware":
             if artifact_id.lower().endswith(".xlsx"):
                 with io.BytesIO(file_bytes) as f:
@@ -51,30 +91,38 @@ async def process_uploaded_infrastructure_file(
                 with io.BytesIO(file_bytes) as f:
                     df_info = pd.read_csv(f)
                     df_disk = pd.DataFrame()
-        elif format_type.lower() == "hyperv":
+        elif is_generic_template or format_type.lower() in ["hyperv", "nutanix", "proxmox"]:
             with io.BytesIO(file_bytes) as f:
                 df_info = pd.read_csv(f)
                 df_disk = pd.DataFrame()
         else:
-            return f"Error: Unsupported format type '{format_type}'."
+            with io.BytesIO(file_bytes) as f:
+                df_info = pd.read_csv(f)
+                df_disk = pd.DataFrame()
+
+        if df_info.empty:
+            return "Error: The uploaded file appears to be empty or could not be parsed."
 
         # Perform transformation logic
-        transformed = _transform_in_memory(df_info, df_disk, format_type.lower())
+        transformed = _transform_in_memory(df_info, df_disk, format_type.lower(), is_generic_template)
 
         # Save as artifacts
         await tool_context.save_artifact(
             "vmInfo.csv", types.Part(text=transformed["vms"].to_csv(index=False))
         )
+        if not transformed["disks"].empty:
+            await tool_context.save_artifact(
+                "diskInfo.csv", types.Part(text=transformed["disks"].to_csv(index=False))
+            )
+        
+        # Save generated tags to staged_labels.csv for API labeling
         await tool_context.save_artifact(
-            "diskInfo.csv", types.Part(text=transformed["disks"].to_csv(index=False))
-        )
-        await tool_context.save_artifact(
-            "tagInfo.csv", types.Part(text=transformed["tags"].to_csv(index=False))
+            "staged_labels.csv", types.Part(text=transformed["tags"].to_csv(index=False))
         )
 
         return (
             f"Successfully processed {len(transformed['vms'])} VMs from {format_type}. "
-            f"Transformed files (vmInfo.csv, diskInfo.csv, tagInfo.csv) have been saved as session artifacts. "
+            f"Transformed files (vmInfo.csv) have been saved as session artifacts. "
             f"You can now run 'get_parsed_vms' to review or 'import_data_to_migration_center' to proceed."
         )
 
@@ -91,77 +139,54 @@ async def get_parsed_vms(tool_context: ToolContext) -> str:
 
         content = part.text or part.inline_data.data.decode("utf-8")
         df = pd.read_csv(io.StringIO(content))
-        cols = [
-            "MachineId",
-            "MachineName",
-            "OsType(optional)",
-            "MachineTypeLabel(optional)",
-        ]
-        cols = [c for c in cols if c in df.columns]
-        return df[cols].to_csv(index=False)
+        return df.to_csv(index=False)
     except Exception as e:
         return f"Error retrieving parsed VMs: {e}"
 
 
-async def add_labels_to_tag_file(
+async def add_labels_to_staged_artifact(
     machine_ids: list[str], key: str, value: str, tool_context: ToolContext
 ) -> str:
-    """Adds or updates a label (key-value pair) for a list of machine IDs in the 'tagInfo.csv' session artifact."""
+    """Adds or updates a label for a list of machine IDs in the 'staged_labels.csv' session artifact."""
     try:
-        part = await tool_context.load_artifact("tagInfo.csv")
+        part = await tool_context.load_artifact("staged_labels.csv")
         if not part:
-            # Create a new tag file if it doesn't exist
             tags_df = pd.DataFrame(columns=["MachineId", "Key", "Value"])
         else:
             content = part.text or part.inline_data.data.decode("utf-8")
             tags_df = pd.read_csv(io.StringIO(content))
 
-        id_col = "MachineId"
-        key_col = "Key"
-        val_col = "Value"
-
         new_rows = []
         for mid in machine_ids:
-            if (
-                not tags_df.empty
-                and id_col in tags_df.columns
-                and key_col in tags_df.columns
-            ):
-                tags_df = tags_df[~((tags_df[id_col] == mid) & (tags_df[key_col] == key))]
-            new_rows.append({id_col: mid, key_col: key, val_col: value})
+            tags_df = tags_df[~((tags_df["MachineId"] == mid) & (tags_df["Key"] == key))]
+            new_rows.append({"MachineId": mid, "Key": key, "Value": value})
 
         if new_rows:
-            new_df = pd.DataFrame(new_rows)
-            tags_df = pd.concat([tags_df, new_df], ignore_index=True)
+            tags_df = pd.concat([tags_df, pd.DataFrame(new_rows)], ignore_index=True)
 
         await tool_context.save_artifact(
-            "tagInfo.csv", types.Part(text=tags_df.to_csv(index=False))
+            "staged_labels.csv", types.Part(text=tags_df.to_csv(index=False))
         )
-        return f"Successfully added/updated label '{key}={value}' for {len(machine_ids)} servers in session artifacts."
+        return f"Successfully updated label '{key}={value}' for {len(machine_ids)} servers in session artifacts."
     except Exception as e:
-        return f"Error updating labels: {e}"
+        return f"Error updating staged labels: {e}"
 
 
 def _transform_in_memory(
-    df_info: pd.DataFrame, df_disk: pd.DataFrame, source_type: str
+    df_info: pd.DataFrame, df_disk: pd.DataFrame, source_type: str, is_generic: bool = False
 ) -> dict[str, pd.DataFrame]:
     def clean_number(val):
-        if pd.isna(val):
-            return np.nan
+        if pd.isna(val): return np.nan
         if isinstance(val, str):
             val = val.replace(",", "").replace('"', "")
-            try:
-                return float(val)
-            except ValueError:
-                return np.nan
+            try: return float(val)
+            except ValueError: return np.nan
         return float(val)
 
     def extract_vm_name(path):
-        if pd.isna(path):
-            return "unknown-vm"
+        if pd.isna(path): return "unknown-vm"
         match = re.search(r"\]\s*([^/]+)/", path)
-        if match:
-            return match.group(1).strip()
+        if match: return match.group(1).strip()
         match = re.search(r"([^/]+)\.(vmx|vmdk)$", path)
         if match:
             name = match.group(1)
@@ -170,16 +195,22 @@ def _transform_in_memory(
 
     def map_os_type(os_name):
         os_name = str(os_name).lower()
-        if "windows" in os_name:
-            return "Windows"
-        if any(x in os_name for x in ["linux", "ubuntu", "rhel", "debian"]):
-            return "Linux"
+        if "windows" in os_name: return "Windows"
+        if any(x in os_name for x in ["linux", "ubuntu", "rhel", "debian"]): return "Linux"
         return "Linux"
 
     vm_info = pd.DataFrame()
     disk_info = pd.DataFrame()
 
-    if source_type == "vmware":
+    if is_generic:
+        vm_info = df_info.copy()
+        if "OsName" in vm_info.columns and "OsType(optional)" not in vm_info.columns:
+            vm_info["OsType(optional)"] = vm_info["OsName"].apply(map_os_type)
+        if "MachineTypeLabel(optional)" not in vm_info.columns:
+            vm_info["MachineTypeLabel(optional)"] = f"{source_type.title()} VM"
+        disk_info = df_disk.copy()
+
+    elif source_type == "vmware":
         df_info["MachineName"] = (
             df_info["Path"].apply(extract_vm_name)
             if "Path" in df_info.columns
@@ -248,7 +279,7 @@ def _transform_in_memory(
 
     tags = pd.DataFrame(columns=["MachineId", "Key", "Value"])
     tags["MachineId"] = vm_info["MachineId"]
-    tags["Key"] = "source"
+    tags["Key"] = "source-platform"
     tags["Value"] = source_type
 
     return {"vms": vm_info, "disks": disk_info, "tags": tags}

@@ -29,16 +29,14 @@ from google.genai import types
 
 from .data_prep import (
     process_uploaded_infrastructure_file, 
-    add_labels_to_tag_file, 
     get_parsed_vms, 
+    add_labels_to_staged_artifact,
     upload_file_to_gcs
 )
 from .import_data import import_data_to_migration_center
-from .assign_groups import assign_assets_to_groups
+from .assign_groups import assign_assets_to_groups, list_migration_center_groups
 from .update_asset_labels import add_labels_post_import
 
-# Attempt to get project ID without triggering full auth if possible,
-# but at module level it's usually okay as long as we don't open connections.
 try:
     _, project_id = google.auth.default()
     os.environ["GOOGLE_CLOUD_PROJECT"] = project_id
@@ -55,7 +53,6 @@ class ResilientGemini(Gemini):
     async def generate_content_async(
         self, llm_request: LlmRequest, stream: bool = False
     ) -> AsyncGenerator[LlmResponse, None]:
-        # Create a deep copy to avoid mutating the original request
         llm_request = llm_request.model_copy(deep=True)
         
         for content in llm_request.contents:
@@ -107,34 +104,50 @@ root_agent = Agent(
         retry_options=types.HttpRetryOptions(attempts=3),
     ),
     instruction="""You are a GCP Migration Data Prep Agent. 
-Your goal is to help users prepare, tag, import, and group their on-premises workload data (VMware or Hyper-V) for Migration Center.
+Your goal is to help users prepare, tag, import, and group their on-premises workload data for Migration Center.
 
 ### Important: Handling Uploads
 When a user uploads a file, you might see a placeholder like `[Artifact Uploaded: filename.xlsx]`. 
 This indicates that the file was successfully uploaded to the chat session as an ADK Artifact.
-- The `artifact_id` is the filename shown in the placeholder (e.g., `filename.xlsx`).
-- You MUST use the `process_uploaded_infrastructure_file` tool to process these artifacts.
+
+### Generic Template Detection
+If a user uploads a .csv file that matches Migration Center manual upload templates (contains 'MachineId', 'MachineName'):
+1. **Ask the user** if the source Platform is: 1. Hyper-V 2. Nutanix 3. Proxmox 4. Other.
+2. Once identified, use `process_uploaded_infrastructure_file` with the appropriate `format_type`.
+
+### Grouping and Labeling Guidelines
+- **Group Assignment**: 
+    1. Use `list_migration_center_groups` to show existing groups.
+    2. Review imported servers using `get_parsed_vms`.
+    3. **Offer 2-3 logical grouping suggestions** (e.g., by OS Type, by Source Platform, by Memory size).
+    4. Allow the user to pick a suggestion, an existing group, or provide a new group name.
+    5. Use `assign_assets_to_groups` with the chosen `group_id` and list of `asset_ids`.
+- **Labeling (Native API)**: 
+    - Use `add_labels_post_import` to apply labels via the Migration Center API. 
+    - **Performance Note**: If there are many labels, prefer calling `add_labels_post_import` WITHOUT the `labels_dict` argument; it will automatically read from the `staged_labels.csv` session artifact created during data prep.
+    - If you need to add custom labels, use `add_labels_to_staged_artifact` first, then call `add_labels_post_import`.
+    - Do NOT use `tagInfo.csv` for post-import labeling.
+- **tagInfo.csv**: Only use this if provided in the initial set of uploaded files by the user. If provided, `process_uploaded_infrastructure_file` will validate it automatically.
 
 ### Workflow:
-1. **Request Upload**: Ask the user to upload their RVTools (.xlsx or .csv) or Hyper-V (.csv) export file directly to the chat.
-2. **Process Artifact**: Once a file is uploaded, call `process_uploaded_infrastructure_file`. This transforms the data and saves it to session artifacts.
-3. **Review Data**: Use `get_parsed_vms` to show the user the list of parsed VMs.
-4. **Labeling (Optional)**: Use `add_labels_to_tag_file` if the user wants to add labels.
-5. **Import**: Use `import_data_to_migration_center` to create the import job and upload the data.
-6. **Finalize**: 
-   - Use `assign_assets_to_groups` to group assets.
-   - Use `add_labels_post_import` AFTER the import succeeds to apply labels.
+1. **Request Upload**: Ask the user to upload their export files.
+2. **Process**: Call `process_uploaded_infrastructure_file`. 
+   - `vmInfo.csv` is REQUIRED. `diskInfo.csv`, `perfInfo.csv`, and `tagInfo.csv` are OPTIONAL.
+3. **Review**: Use `get_parsed_vms` to list VMs and attributes.
+4. **Import**: Use `import_data_to_migration_center`.
+5. **Group/Label**: Follow the guidelines above to suggest groups and apply labels AFTER import.
 
 ### Guidelines:
 - Do NOT save uploaded files to local disk.
-- All intermediate data (vmInfo.csv, etc.) is stored as session artifacts.""",
+- If you encounter a mime type error, you can still process the file as an artifact.""",
     tools=[
         process_uploaded_infrastructure_file,
         get_parsed_vms,
-        add_labels_to_tag_file,
         import_data_to_migration_center, 
+        list_migration_center_groups,
         assign_assets_to_groups,
         add_labels_post_import,
+        add_labels_to_staged_artifact,
         upload_file_to_gcs
     ],
 )

@@ -1,97 +1,70 @@
 import os
 import re
 import io
+from typing import Dict, Optional
 
 import google.auth
 import google.auth.transport.requests
-import pandas as pd
 from google.cloud import migrationcenter_v1
 from google.protobuf import field_mask_pb2
 from google.adk.tools import ToolContext
+import pandas as pd
 
 
-async def add_labels_post_import(tool_context: ToolContext) -> str:
-    """Retrieves assets from Migration Center and updates their labels post-import based on tagInfo.csv in session artifacts.
-    
-    Returns:
-        A string summary of the execution log.
+async def add_labels_post_import(
+    tool_context: ToolContext,
+    labels_dict: Optional[Dict[str, Dict[str, str]]] = None
+) -> str:
+    """Updates labels for assets in Migration Center using native APIs.
+
+    If labels_dict is not provided, it reads from the 'staged_labels.csv' session artifact.
+
+    Args:
+        tool_context: The ADK tool context.
+        labels_dict: Optional dictionary mapping MachineId to labels {key: value}.
     """
     logs = []
+
     def log(msg: str):
         print(msg)
         logs.append(msg)
 
-    try:
-        part = await tool_context.load_artifact("tagInfo.csv")
-        if not part or not part.inline_data or not part.inline_data.data:
-            return "Error: tagInfo.csv not found in session artifacts. Please run data prep first."
-        df = pd.read_csv(io.BytesIO(part.inline_data.data))
-    except Exception as e:
-        return f"Error: Failed to read tagInfo.csv from session artifacts: {e}."
+    # 1. Resolve Labels to Apply
+    final_labels_dict = labels_dict or {}
 
-    if df.empty:
-        return "Info: tagInfo.csv is empty. No labels to apply."
+    if not final_labels_dict:
+        log("No labels_dict provided. Checking 'staged_labels.csv' artifact...")
+        try:
+            part = await tool_context.load_artifact("staged_labels.csv")
+            if part:
+                content = part.text or part.inline_data.data.decode("utf-8")
+                df = pd.read_csv(io.StringIO(content))
+                for _, row in df.iterrows():
+                    m_id = str(row["MachineId"]).strip()
+                    k = str(row["Key"]).strip()
+                    v = str(row["Value"]).strip()
+                    if m_id not in final_labels_dict:
+                        final_labels_dict[m_id] = {}
+                    final_labels_dict[m_id][k] = v
+                log(f"Loaded labels for {len(final_labels_dict)} assets from session artifact.")
+            else:
+                log("No 'staged_labels.csv' artifact found.")
+        except Exception as e:
+            log(f"Warning: Failed to load staged labels from artifact: {e}")
 
-    id_col = None
-    for col in ["Machine Id", "MachineId", "Machine ID", "machine_id", "machine id"]:
-        if col in df.columns:
-            id_col = col
-            break
-    if not id_col:
-        id_col = df.columns[0]
+    if not final_labels_dict:
+        return "Info: No labels found to apply. Please run 'process_uploaded_infrastructure_file' or 'add_labels_to_staged_artifact' first."
 
-    key_col = None
-    for col in ["Tag Category", "Key", "Category", "tag_category", "key"]:
-        if col in df.columns:
-            key_col = col
-            break
-    if not key_col:
-        key_col = df.columns[1] if len(df.columns) > 1 else None
-
-    val_col = None
-    for col in ["Tag Value", "Value", "tag_value", "value"]:
-        if col in df.columns:
-            val_col = col
-            break
-    if not val_col:
-        val_col = df.columns[2] if len(df.columns) > 2 else None
-
-    log(f"Mapping columns - ID: '{id_col}', Key: '{key_col}', Value: '{val_col}'")
-
-    labels_by_machine = {}
-    for _, row in df.iterrows():
-        m_id = str(row[id_col]).strip()
-        k = str(row[key_col]).strip() if key_col else ""
-        v = str(row[val_col]).strip() if val_col else ""
-        if not m_id or not k:
-            continue
-
-        k_clean = re.sub(r'[^a-z0-9_-]', '_', k.lower())
-        if k_clean and not k_clean[0].islower():
-            k_clean = 'l_' + k_clean
-        k_clean = k_clean[:63]
-
-        v_clean = re.sub(r'[^a-z0-9_-]', '_', v.lower())
-        v_clean = v_clean[:63]
-
-        if m_id not in labels_by_machine:
-            labels_by_machine[m_id] = {}
-        labels_by_machine[m_id][k_clean] = v_clean
-
+    # 2. Setup GCS/MC Client
     project_id = os.environ.get("GCP_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT")
     location = os.environ.get("GCP_LOCATION") or os.environ.get("GOOGLE_CLOUD_LOCATION") or "us-central1"
-
-    if location == "global":
-        location = "us-central1"
+    if location == "global": location = "us-central1"
 
     if not project_id:
         try:
             _, project_id = google.auth.default()
-        except Exception as e:
-            return f"Error: Failed to get default GCP project ID: {e}"
-
-    if not project_id:
-        return "Error: GCP_PROJECT_ID or GOOGLE_CLOUD_PROJECT environment variable not set and could not be determined."
+        except Exception:
+            return "Error: GCP_PROJECT_ID not set."
 
     log(f"Using project: {project_id}, location: {location}")
 
@@ -104,72 +77,57 @@ async def add_labels_post_import(tool_context: ToolContext) -> str:
 
         updated_count = 0
         skipped_count = 0
-        unmatched_count = 0
         errors = []
 
+        # 3. Normalize Input
+        norm_dict = {}
+        for m_id, labels in final_labels_dict.items():
+            mid_low = m_id.lower()
+            norm_labels = {}
+            for k, v in labels.items():
+                k_clean = re.sub(r"[^a-z0-9_-]", "_", k.lower())
+                if k_clean and not k_clean[0].islower(): k_clean = "l_" + k_clean
+                v_clean = re.sub(r"[^a-z0-9_-]", "_", str(v).lower())
+                norm_labels[k_clean[:63]] = v_clean[:63]
+            norm_dict[mid_low] = norm_labels
+
+        # 4. Apply Labels via API
         for asset in assets:
-            asset_id = asset.name.split('/')[-1]
-
-            matched_id = None
-            for m_id in labels_by_machine:
-                if asset_id == m_id or asset_id.lower() == m_id.lower():
-                    matched_id = m_id
-                    break
-
-            if matched_id:
-                new_labels = labels_by_machine[matched_id]
+            asset_full_name = asset.name
+            asset_id = asset.name.split("/")[-1].lower()
+            
+            # Match by MachineId or common UUID patterns in MC
+            matched_labels = norm_dict.get(asset_id)
+            
+            if matched_labels:
                 current_labels = dict(asset.labels) if asset.labels else {}
-
                 needs_update = False
-                for k, v in new_labels.items():
+                for k, v in matched_labels.items():
                     if current_labels.get(k) != v:
                         current_labels[k] = v
                         needs_update = True
 
                 if needs_update:
-                    log(f"Updating labels for asset {asset_id} to: {current_labels}")
+                    log(f"Updating asset {asset_id}...")
                     try:
                         updated_asset = migrationcenter_v1.Asset()
-                        updated_asset.name = asset.name
+                        updated_asset.name = asset_full_name
                         for k, v in current_labels.items():
                             updated_asset.labels[k] = v
-
+                        
                         update_mask = field_mask_pb2.FieldMask(paths=["labels"])
-
-                        req = migrationcenter_v1.UpdateAssetRequest(
-                            asset=updated_asset,
-                            update_mask=update_mask
-                        )
-
-                        op = client.update_asset(request=req)
-                        op.result()
-                        log(f"Asset {asset_id} updated successfully.")
+                        client.update_asset(request=migrationcenter_v1.UpdateAssetRequest(
+                            asset=updated_asset, update_mask=update_mask
+                        ))
                         updated_count += 1
                     except Exception as ex:
-                        error_msg = f"Failed to update asset {asset_id}: {ex}"
-                        log(error_msg)
-                        errors.append(error_msg)
+                        errors.append(f"Failed {asset_id}: {ex}")
                 else:
-                    log(f"Asset {asset_id} already has all matching labels. Skipping.")
                     skipped_count += 1
-            else:
-                if "uuid" not in asset_id.lower() and "hv-vm" not in asset_id.lower():
-                    log(f"Asset {asset_id} not found in tagInfo.csv. Skipping labeling.")
-                unmatched_count += 1
 
-        summary = (
-            f"Post-Import Labeling Complete.\n"
-            f"Successfully updated: {updated_count} assets.\n"
-            f"Skipped (already matching): {skipped_count} assets.\n"
-            f"Unmatched in CSV: {unmatched_count} assets.\n"
-        )
-        if errors:
-            summary += f"Errors encountered: {len(errors)}\n"
-
+        summary = f"API Labeling Complete. Updated: {updated_count}, Skipped: {skipped_count}."
+        if errors: summary += f" Errors: {len(errors)}"
         return summary + "\nLogs:\n" + "\n".join(logs)
 
     except Exception as e:
-        return f"Error: Failed to process post-import asset labeling: {e}\nLogs:\n" + "\n".join(logs)
-
-if __name__ == "__main__":
-    print(add_labels_post_import())
+        return f"Error: Failed post-import labeling: {e}"

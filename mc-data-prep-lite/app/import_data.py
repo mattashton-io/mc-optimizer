@@ -99,7 +99,7 @@ async def import_data_to_migration_center(tool_context: ToolContext) -> str:
                     f.write(content_bytes)
             except Exception as e:
                 print(f"File {file_name} not found or error loading from artifacts: {e}")
-                if file_name in ["vmInfo.csv", "diskInfo.csv"]:
+                if file_name == "vmInfo.csv":
                      failed_files.append(file_name)
                 continue
 
