@@ -1,22 +1,26 @@
 import os
+import tempfile
 import time
 
 import google.auth
 import requests
 from google.cloud import migrationcenter_v1
 
+from .app_utils.gcs_utils import download_from_gcs, get_bucket_name
+
 
 def import_data_to_migration_center() -> str:
-    """Imports generated CSV files (vmInfo.csv, diskInfo.csv, tagInfo.csv) into Migration Center.
+    """Imports generated CSV files (vmInfo.csv, diskInfo.csv, tagInfo.csv) from GCS into Migration Center.
     
     It reads project and location from environment variables GCP_PROJECT_ID (or GOOGLE_CLOUD_PROJECT) 
     and GCP_LOCATION (or GOOGLE_CLOUD_LOCATION).
-    It reads files from 'data/output' and uploads them to a new import job.
+    It reads files from 'gs://<bucket>/output' and uploads them to a new import job.
     
     Returns:
         A string indicating success or failure.
     """
-    output_dir = os.path.join(os.path.dirname(__file__), "data", "output")
+    bucket_name = get_bucket_name()
+    gcs_output_prefix = "output/"
 
     project_id = os.environ.get("GCP_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT")
     location = os.environ.get("GCP_LOCATION") or os.environ.get("GOOGLE_CLOUD_LOCATION") or "us-central1"
@@ -76,48 +80,54 @@ def import_data_to_migration_center() -> str:
     uploaded_files = []
     failed_files = []
 
-    for file_name in files:
-        file_path = os.path.join(output_dir, file_name)
-        if not os.path.exists(file_path):
-            print(f"File not found: {file_path}")
-            if file_name in ["vmInfo.csv", "diskInfo.csv"]:
-                 failed_files.append(file_name)
-            continue
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        for file_name in files:
+            gcs_path = f"{gcs_output_prefix}{file_name}"
+            local_path = os.path.join(tmp_dir, file_name)
 
-        import_data_file = {"format": "IMPORT_JOB_FORMAT_STRATOZONE_CSV"}
+            print(f"Downloading {file_name} from GCS...")
+            try:
+                download_from_gcs(gcs_path, local_path)
+            except Exception as e:
+                print(f"File {file_name} not found in GCS or error: {e}")
+                if file_name in ["vmInfo.csv", "diskInfo.csv"]:
+                     failed_files.append(file_name)
+                continue
 
-        req = migrationcenter_v1.CreateImportDataFileRequest(
-            parent=job_name,
-            import_data_file_id=file_name.split(".")[0].lower(),
-            import_data_file=import_data_file,
-        )
+            import_data_file = {"format": "IMPORT_JOB_FORMAT_STRATOZONE_CSV"}
 
-        print(f"Creating import data file resource for {file_name}...")
-        try:
-            op = client.create_import_data_file(request=req)
-            resp = op.result()
-            upload_uri = resp.upload_file_info.signed_uri
+            req = migrationcenter_v1.CreateImportDataFileRequest(
+                parent=job_name,
+                import_data_file_id=file_name.split(".")[0].lower(),
+                import_data_file=import_data_file,
+            )
 
-            headers = dict(resp.upload_file_info.headers)
-            if not headers:
-                headers = {"Content-Type": "application/octet-stream"}
+            print(f"Creating import data file resource for {file_name}...")
+            try:
+                op = client.create_import_data_file(request=req)
+                resp = op.result()
+                upload_uri = resp.upload_file_info.signed_uri
 
-            print(f"Uploading file {file_name} to signed URL...")
-            with open(file_path, "rb") as f:
-                put_resp = requests.put(
-                    upload_uri,
-                    data=f,
-                    headers=headers,
-                )
-                if put_resp.status_code == 200:
-                    print(f"Successfully uploaded {file_name}")
-                    uploaded_files.append(file_name)
-                else:
-                    print(f"Failed to upload {file_name}: {put_resp.status_code}")
-                    failed_files.append(file_name)
-        except Exception as e:
-            print(f"Failed to process {file_name}: {e}")
-            failed_files.append(file_name)
+                headers = dict(resp.upload_file_info.headers)
+                if not headers:
+                    headers = {"Content-Type": "application/octet-stream"}
+
+                print(f"Uploading file {file_name} to signed URL...")
+                with open(local_path, "rb") as f:
+                    put_resp = requests.put(
+                        upload_uri,
+                        data=f,
+                        headers=headers,
+                    )
+                    if put_resp.status_code == 200:
+                        print(f"Successfully uploaded {file_name}")
+                        uploaded_files.append(file_name)
+                    else:
+                        print(f"Failed to upload {file_name}: {put_resp.status_code}")
+                        failed_files.append(file_name)
+            except Exception as e:
+                print(f"Failed to process {file_name}: {e}")
+                failed_files.append(file_name)
 
     if failed_files:
         return f"Error: Import aborted due to missing or failed file uploads: {failed_files}. Uploaded: {uploaded_files}. Ensure you have run data transformation first."

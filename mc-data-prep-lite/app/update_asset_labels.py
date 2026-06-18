@@ -7,9 +7,11 @@ import pandas as pd
 from google.cloud import migrationcenter_v1
 from google.protobuf import field_mask_pb2
 
+from .app_utils.gcs_utils import get_bucket_name
+
 
 def add_labels_post_import() -> str:
-    """Retrieves assets from Migration Center and updates their labels post-import based on tagInfo.csv.
+    """Retrieves assets from Migration Center and updates their labels post-import based on tagInfo.csv in GCS.
     
     Returns:
         A string summary of the execution log.
@@ -19,15 +21,13 @@ def add_labels_post_import() -> str:
         print(msg)
         logs.append(msg)
 
-    tag_file = os.path.join(os.path.dirname(__file__), "data", "output", "tagInfo.csv")
-
-    if not os.path.exists(tag_file):
-        return f"Error: tagInfo.csv not found at {tag_file}. Please run data prep first."
+    bucket_name = get_bucket_name()
+    tag_file = f"gs://{bucket_name}/output/tagInfo.csv"
 
     try:
         df = pd.read_csv(tag_file)
     except Exception as e:
-        return f"Error: Failed to read {tag_file}: {e}"
+        return f"Error: Failed to read tagInfo.csv from GCS ({tag_file}): {e}. Please run data prep first."
 
     if df.empty:
         return "Info: tagInfo.csv is empty. No labels to apply."

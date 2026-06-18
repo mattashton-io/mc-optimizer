@@ -6,6 +6,8 @@ import pandas as pd
 import requests
 from google.cloud import migrationcenter_v1
 
+from .app_utils.gcs_utils import get_bucket_name
+
 
 def assign_assets_to_groups() -> str:
     """Assigns Migration Center assets to groups based on their source (VMware vs Hyper-V) as defined in tagInfo.csv.
@@ -18,15 +20,15 @@ def assign_assets_to_groups() -> str:
         print(msg)
         logs.append(msg)
 
-    tag_file = os.path.join(os.path.dirname(__file__), "data", "output", "tagInfo.csv")
+    bucket_name = get_bucket_name()
+    tag_file = f"gs://{bucket_name}/output/tagInfo.csv"
 
-    if not os.path.exists(tag_file):
-        return f"Error: tagInfo.csv not found at {tag_file}. Please run data prep first."
+    # Removed: if not os.path.exists(tag_file): ...
 
     try:
         df_tags = pd.read_csv(tag_file)
     except Exception as e:
-        return f"Error: Failed to read {tag_file}: {e}"
+        return f"Error: Failed to read tagInfo.csv from GCS ({tag_file}): {e}. Please run data prep first."
 
     project_id = os.environ.get("GCP_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT")
     location = os.environ.get("GCP_LOCATION") or os.environ.get("GOOGLE_CLOUD_LOCATION") or "us-central1"
