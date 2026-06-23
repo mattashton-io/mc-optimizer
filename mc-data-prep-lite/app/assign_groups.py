@@ -1,14 +1,14 @@
-import os
 import io
-import time
-from typing import List, Optional
+import os
 
 import google.auth
 import google.auth.transport.requests
-import requests
-from google.cloud import migrationcenter_v1
-from google.adk.tools import ToolContext
 import pandas as pd
+import requests
+from google.adk.tools import ToolContext
+from google.cloud import migrationcenter_v1
+
+from .app_utils.project_utils import get_project_id
 
 
 async def list_migration_center_groups(tool_context: ToolContext) -> str:
@@ -17,40 +17,37 @@ async def list_migration_center_groups(tool_context: ToolContext) -> str:
     Returns:
         A list of group names and their display names.
     """
-    project_id = os.environ.get("GCP_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT")
+    project_id = get_project_id()
     location = os.environ.get("GCP_LOCATION") or os.environ.get("GOOGLE_CLOUD_LOCATION") or "us-central1"
 
     if location == "global":
         location = "us-central1"
 
     if not project_id:
-        try:
-            _, project_id = google.auth.default()
-        except Exception as e:
-            return f"Error: Failed to get GCP project ID: {e}"
+        return "Error: GCP Project ID could not be determined."
 
     try:
         client = migrationcenter_v1.MigrationCenterClient()
         parent = f"projects/{project_id}/locations/{location}"
-        
+
         groups = client.list_groups(parent=parent)
         group_list = []
         for group in groups:
             group_list.append(f"- ID: {group.name.split('/')[-1]}, Display Name: {group.display_name}")
-        
+
         if not group_list:
             return "No existing groups found in Migration Center."
-        
+
         return "Existing Groups:\n" + "\n".join(group_list)
     except Exception as e:
         return f"Error listing groups: {e}"
 
 
 async def assign_assets_to_groups(
-    group_id: str, 
-    asset_ids: Optional[List[str]] = None, 
+    group_id: str,
+    asset_ids: list[str] | None = None,
     tool_context: ToolContext = None,
-    group_display_name: Optional[str] = None
+    group_display_name: str | None = None
 ) -> str:
     """Assigns specific assets to a group in Migration Center using native APIs.
     
@@ -68,15 +65,13 @@ async def assign_assets_to_groups(
         print(msg)
         logs.append(msg)
 
-    project_id = os.environ.get("GCP_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT")
+    project_id = get_project_id()
     location = os.environ.get("GCP_LOCATION") or os.environ.get("GOOGLE_CLOUD_LOCATION") or "us-central1"
-    if location == "global": location = "us-central1"
+    if location == "global":
+        location = "us-central1"
 
     if not project_id:
-        try:
-            _, project_id = google.auth.default()
-        except Exception:
-            return "Error: GCP_PROJECT_ID not set."
+        return "Error: GCP Project ID could not be determined."
 
     log(f"Using project: {project_id}, location: {location}")
 
@@ -130,16 +125,18 @@ async def assign_assets_to_groups(
 
     # 4. Add Assets to Group
     log(f"Adding {len(final_asset_ids)} assets to group '{group_id}'...")
-    
+
     full_asset_names = []
     for aid in final_asset_ids:
-        if aid.startswith("projects/"): full_asset_names.append(aid)
-        else: full_asset_names.append(f"{parent}/assets/{aid}")
+        if aid.startswith("projects/"):
+            full_asset_names.append(aid)
+        else:
+            full_asset_names.append(f"{parent}/assets/{aid}")
 
     url = f"https://migrationcenter.googleapis.com/v1/{group_name}:addAssets"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     body = {"assets": {"assetIds": full_asset_names}, "allowExisting": True}
-    
+
     try:
         resp = requests.post(url, headers=headers, json=body)
         if resp.status_code == 200:

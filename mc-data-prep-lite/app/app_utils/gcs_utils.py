@@ -1,16 +1,20 @@
 import os
 
-import google.auth
-from google.cloud import storage
 from google.api_core.exceptions import Conflict, Forbidden
+from google.cloud import storage
+
+from .project_utils import get_project_id
 
 
 def get_storage_client():
-    return storage.Client()
+    project_id = get_project_id()
+    return storage.Client(project=project_id)
 
 def get_bucket_name():
     """Returns the bucket name. Creates one if it doesn't exist."""
-    _, project_id = google.auth.default()
+    project_id = get_project_id()
+    if not project_id:
+        raise ValueError("GCP Project ID could not be determined.")
     bucket_name = f"{project_id}-mc-data-prep"
     client = get_storage_client()
 

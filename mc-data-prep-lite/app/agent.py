@@ -37,11 +37,11 @@ from .import_data import import_data_to_migration_center
 from .assign_groups import assign_assets_to_groups, list_migration_center_groups
 from .update_asset_labels import add_labels_post_import
 
-try:
-    _, project_id = google.auth.default()
+from .app_utils.project_utils import get_project_id
+
+project_id = get_project_id()
+if project_id:
     os.environ["GOOGLE_CLOUD_PROJECT"] = project_id
-except Exception:
-    pass
 
 os.environ["GOOGLE_CLOUD_LOCATION"] = "global"
 os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "True"

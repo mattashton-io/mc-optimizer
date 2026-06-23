@@ -1,19 +1,18 @@
+import io
 import os
 import re
-import io
-from typing import Dict, Optional
 
-import google.auth
-import google.auth.transport.requests
+import pandas as pd
+from google.adk.tools import ToolContext
 from google.cloud import migrationcenter_v1
 from google.protobuf import field_mask_pb2
-from google.adk.tools import ToolContext
-import pandas as pd
+
+from .app_utils.project_utils import get_project_id
 
 
 async def add_labels_post_import(
     tool_context: ToolContext,
-    labels_dict: Optional[Dict[str, Dict[str, str]]] = None
+    labels_dict: dict[str, dict[str, str]] | None = None
 ) -> str:
     """Updates labels for assets in Migration Center using native APIs.
 
@@ -50,15 +49,13 @@ async def add_labels_post_import(
         return "Info: No labels found to apply."
 
     # 2. Setup MC Client
-    project_id = os.environ.get("GCP_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT")
+    project_id = get_project_id()
     location = os.environ.get("GCP_LOCATION") or os.environ.get("GOOGLE_CLOUD_LOCATION") or "us-central1"
-    if location == "global": location = "us-central1"
+    if location == "global":
+        location = "us-central1"
 
     if not project_id:
-        try:
-            _, project_id = google.auth.default()
-        except Exception:
-            return "Error: GCP_PROJECT_ID not set."
+        return "Error: GCP Project ID could not be determined."
 
     log(f"Using project: {project_id}, location: {location}")
 
@@ -85,14 +82,14 @@ async def add_labels_post_import(
         for asset in assets:
             asset_full_name = asset.name
             asset_id = asset.name.split("/")[-1].lower()
-            
+
             # Find metadata for this asset (case-insensitive ID match)
             new_labels = None
             for m_id, labels in final_labels_dict.items():
                 if m_id.lower() == asset_id:
                     new_labels = labels
                     break
-            
+
             if not new_labels:
                 continue
 
@@ -115,7 +112,7 @@ async def add_labels_post_import(
                     updated_asset.name = asset_full_name
                     for k, v in current_labels.items():
                         updated_asset.labels[k] = v
-                    
+
                     update_mask = field_mask_pb2.FieldMask(paths=["labels"])
                     client.update_asset(request=migrationcenter_v1.UpdateAssetRequest(
                         asset=updated_asset, update_mask=update_mask
@@ -127,7 +124,8 @@ async def add_labels_post_import(
                 skipped_count += 1
 
         summary = f"Labeling Complete. Updated: {updated_count}, Skipped: {skipped_count}."
-        if errors: summary += f" Errors: {len(errors)}"
+        if errors:
+            summary += f" Errors: {len(errors)}"
         return summary + "\nLogs:\n" + "\n".join(logs)
 
     except Exception as e:

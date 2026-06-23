@@ -2,10 +2,11 @@ import os
 import tempfile
 import time
 
-import google.auth
 import requests
-from google.cloud import migrationcenter_v1
 from google.adk.tools import ToolContext
+from google.cloud import migrationcenter_v1
+
+from .app_utils.project_utils import get_project_id
 
 
 async def import_data_to_migration_center(tool_context: ToolContext) -> str:
@@ -14,20 +15,14 @@ async def import_data_to_migration_center(tool_context: ToolContext) -> str:
     Returns:
         A string indicating success or failure.
     """
-    project_id = os.environ.get("GCP_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT")
+    project_id = get_project_id()
     location = os.environ.get("GCP_LOCATION") or os.environ.get("GOOGLE_CLOUD_LOCATION") or "us-central1"
 
     if location == "global":
         location = "us-central1"
 
     if not project_id:
-        try:
-            _, project_id = google.auth.default()
-        except Exception as e:
-            return f"Error: GCP_PROJECT_ID environment variable not set and could not be determined from ADC: {e}"
-
-    if not project_id:
-        return "Error: GCP_PROJECT_ID or GOOGLE_CLOUD_PROJECT environment variable not set."
+        return "Error: GCP Project ID could not be determined."
 
     print(f"Using project: {project_id}, location: {location}")
 
@@ -85,13 +80,13 @@ async def import_data_to_migration_center(tool_context: ToolContext) -> str:
                 part = await tool_context.load_artifact(file_name)
                 if not part:
                     raise ValueError("Artifact not found in session.")
-                
+
                 content_bytes = None
                 if part.inline_data:
                     content_bytes = part.inline_data.data
                 elif part.text:
                     content_bytes = part.text.encode("utf-8")
-                
+
                 if not content_bytes:
                     raise ValueError("Artifact is empty.")
 
