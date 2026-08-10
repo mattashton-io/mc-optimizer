@@ -13,12 +13,16 @@ from .app_utils.project_utils import get_project_id
 
 async def list_migration_center_groups(tool_context: ToolContext) -> str:
     """Lists all existing groups in the Migration Center project.
-    
+
     Returns:
         A list of group names and their display names.
     """
     project_id = get_project_id()
-    location = os.environ.get("GCP_LOCATION") or os.environ.get("GOOGLE_CLOUD_LOCATION") or "us-central1"
+    location = (
+        os.environ.get("GCP_LOCATION")
+        or os.environ.get("GOOGLE_CLOUD_LOCATION")
+        or "us-central1"
+    )
 
     if location == "global":
         location = "us-central1"
@@ -33,7 +37,9 @@ async def list_migration_center_groups(tool_context: ToolContext) -> str:
         groups = client.list_groups(parent=parent)
         group_list = []
         for group in groups:
-            group_list.append(f"- ID: {group.name.split('/')[-1]}, Display Name: {group.display_name}")
+            group_list.append(
+                f"- ID: {group.name.split('/')[-1]}, Display Name: {group.display_name}"
+            )
 
         if not group_list:
             return "No existing groups found in Migration Center."
@@ -46,11 +52,11 @@ async def list_migration_center_groups(tool_context: ToolContext) -> str:
 async def assign_assets_to_groups(
     group_id: str,
     asset_ids: list[str] | None = None,
-    tool_context: ToolContext = None,
-    group_display_name: str | None = None
+    tool_context: ToolContext | None = None,
+    group_display_name: str | None = None,
 ) -> str:
     """Assigns specific assets to a group in Migration Center using native APIs.
-    
+
     If asset_ids is not provided, it will attempt to assign ALL unique VMs from the 'vmInfo.csv' artifact.
     If the group does not exist, it will be created.
 
@@ -61,12 +67,17 @@ async def assign_assets_to_groups(
         group_display_name: Optional display name for the group.
     """
     logs = []
+
     def log(msg: str):
         print(msg)
         logs.append(msg)
 
     project_id = get_project_id()
-    location = os.environ.get("GCP_LOCATION") or os.environ.get("GOOGLE_CLOUD_LOCATION") or "us-central1"
+    location = (
+        os.environ.get("GCP_LOCATION")
+        or os.environ.get("GOOGLE_CLOUD_LOCATION")
+        or "us-central1"
+    )
     if location == "global":
         location = "us-central1"
 
@@ -78,19 +89,30 @@ async def assign_assets_to_groups(
     # 1. Resolve Asset IDs if not provided (Automatic "all-servers" grouping)
     final_asset_ids = asset_ids or []
     if not final_asset_ids:
-        log("No asset_ids provided. Attempting to load all unique VMs from session artifacts...")
+        log(
+            "No asset_ids provided. Attempting to load all unique VMs from session artifacts..."
+        )
         try:
             part = await tool_context.load_artifact("vmInfo.csv")
             if part:
                 content = part.text or part.inline_data.data.decode("utf-8")
                 df = pd.read_csv(io.StringIO(content))
                 if "MachineId" in df.columns:
-                    final_asset_ids = df["MachineId"].unique().tolist()
+                    raw_ids = df["MachineId"].dropna().unique().tolist()
+                    final_asset_ids = [
+                        str(aid).strip() for aid in raw_ids if str(aid).strip()
+                    ]
                     log(f"Found {len(final_asset_ids)} unique assets in session.")
             else:
                 log("No 'vmInfo.csv' artifact found to resolve assets automatically.")
         except Exception as e:
             log(f"Warning: Failed to load assets from artifact: {e}")
+    else:
+        final_asset_ids = [
+            str(aid).strip()
+            for aid in final_asset_ids
+            if pd.notna(aid) and str(aid).strip()
+        ]
 
     if not final_asset_ids:
         return "Error: No assets found to assign to group."
@@ -115,10 +137,14 @@ async def assign_assets_to_groups(
     except Exception:
         log(f"Group '{group_id}' not found. Creating...")
         try:
-            new_group = migrationcenter_v1.Group(display_name=group_display_name or group_id)
-            client.create_group(request=migrationcenter_v1.CreateGroupRequest(
-                parent=parent, group=new_group, group_id=group_id
-            )).result()
+            new_group = migrationcenter_v1.Group(
+                display_name=group_display_name or group_id
+            )
+            client.create_group(
+                request=migrationcenter_v1.CreateGroupRequest(
+                    parent=parent, group=new_group, group_id=group_id
+                )
+            ).result()
             log(f"Group '{group_id}' created successfully.")
         except Exception as ce:
             return f"Error: Failed to create group {group_id}: {ce}"
@@ -140,8 +166,11 @@ async def assign_assets_to_groups(
     try:
         resp = requests.post(url, headers=headers, json=body)
         if resp.status_code == 200:
-             return f"Success: Assigned {len(final_asset_ids)} assets to group '{group_id}'.\n" + "\n".join(logs)
+            return (
+                f"Success: Assigned {len(final_asset_ids)} assets to group '{group_id}'.\n"
+                + "\n".join(logs)
+            )
         else:
-             return f"Error: API failed with {resp.status_code}: {resp.text}"
+            return f"Error: API failed with {resp.status_code}: {resp.text}"
     except Exception as e:
         return f"Error: Request failed: {e}"

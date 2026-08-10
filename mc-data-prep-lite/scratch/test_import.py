@@ -1,8 +1,8 @@
 import sys
 
-sys.modules['OpenSSL'] = None
+sys.modules["OpenSSL"] = None
 
-import traceback
+import traceback  # noqa: E402
 
 print("Testing imports with OpenSSL blocked...")
 try:

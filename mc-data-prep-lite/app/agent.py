@@ -28,10 +28,10 @@ from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 
 from .data_prep import (
-    process_uploaded_infrastructure_file, 
-    get_parsed_vms, 
+    process_uploaded_infrastructure_file,
+    get_parsed_vms,
     add_labels_to_staged_artifact,
-    upload_file_to_gcs
+    upload_file_to_gcs,
 )
 from .import_data import import_data_to_migration_center
 from .assign_groups import assign_assets_to_groups, list_migration_center_groups
@@ -46,19 +46,20 @@ if project_id:
 os.environ["GOOGLE_CLOUD_LOCATION"] = "global"
 os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "True"
 
+
 class ResilientGemini(Gemini):
     """Subclass of Gemini that filters out unsupported mime types to avoid 400 errors."""
-    
+
     @override
     async def generate_content_async(
         self, llm_request: LlmRequest, stream: bool = False
     ) -> AsyncGenerator[LlmResponse, None]:
         llm_request = llm_request.model_copy(deep=True)
-        
+
         for content in llm_request.contents:
             if not content.parts:
                 continue
-            
+
             filtered_parts = []
             for part in content.parts:
                 mime_type = None
@@ -66,36 +67,41 @@ class ResilientGemini(Gemini):
                     mime_type = part.inline_data.mime_type
                 elif part.file_data:
                     mime_type = part.file_data.mime_type
-                
+
                 if mime_type:
                     if "csv" in mime_type.lower():
-                        if part.inline_data: part.inline_data.mime_type = "text/csv"
-                        if part.file_data: part.file_data.mime_type = "text/csv"
+                        if part.inline_data:
+                            part.inline_data.mime_type = "text/csv"
+                        if part.file_data:
+                            part.file_data.mime_type = "text/csv"
                         mime_type = "text/csv"
-                    
+
                     supported = (
-                        mime_type.startswith("image/") or
-                        mime_type.startswith("video/") or
-                        mime_type.startswith("audio/") or
-                        mime_type.startswith("text/") or
-                        mime_type == "application/pdf"
+                        mime_type.startswith("image/")
+                        or mime_type.startswith("video/")
+                        or mime_type.startswith("audio/")
+                        or mime_type.startswith("text/")
+                        or mime_type == "application/pdf"
                     )
-                    
+
                     if not supported:
                         filename = "uploaded_file"
                         if part.file_data:
                             filename = part.file_data.file_uri.split("/")[-1]
                         elif part.inline_data:
                             filename = "binary_artifact"
-                        
-                        filtered_parts.append(types.Part(text=f"[Artifact Uploaded: {filename}]"))
+
+                        filtered_parts.append(
+                            types.Part(text=f"[Artifact Uploaded: {filename}]")
+                        )
                         continue
-                
+
                 filtered_parts.append(part)
             content.parts = filtered_parts
-            
+
         async for response in super().generate_content_async(llm_request, stream):
             yield response
+
 
 root_agent = Agent(
     name="root_agent",
@@ -139,12 +145,12 @@ If a user uploads a .csv file that matches Migration Center manual upload templa
     tools=[
         process_uploaded_infrastructure_file,
         get_parsed_vms,
-        import_data_to_migration_center, 
+        import_data_to_migration_center,
         list_migration_center_groups,
         assign_assets_to_groups,
         add_labels_post_import,
         add_labels_to_staged_artifact,
-        upload_file_to_gcs
+        upload_file_to_gcs,
     ],
 )
 

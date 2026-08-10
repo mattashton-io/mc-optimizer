@@ -72,7 +72,9 @@ async def process_uploaded_infrastructure_file(
                 return f"Error: tagInfo.csv contains invalid tags. Examples: {invalid[['Key', 'Value']].head(2).to_dict()}"
 
             csv_content = df_tags[required_cols].to_csv(index=False)
-            await tool_context.save_artifact("tagInfo.csv", types.Part(text=csv_content))
+            await tool_context.save_artifact(
+                "tagInfo.csv", types.Part(text=csv_content)
+            )
             await tool_context.save_artifact(
                 "staged_labels.csv", types.Part(text=csv_content)
             )
@@ -124,12 +126,14 @@ async def process_uploaded_infrastructure_file(
         )
         if not transformed["disks"].empty:
             await tool_context.save_artifact(
-                "diskInfo.csv", types.Part(text=transformed["disks"].to_csv(index=False))
+                "diskInfo.csv",
+                types.Part(text=transformed["disks"].to_csv(index=False)),
             )
 
         # Save generated tags to staged_labels.csv for API labeling
         await tool_context.save_artifact(
-            "staged_labels.csv", types.Part(text=transformed["tags"].to_csv(index=False))
+            "staged_labels.csv",
+            types.Part(text=transformed["tags"].to_csv(index=False)),
         )
 
         return (
@@ -171,7 +175,9 @@ async def add_labels_to_staged_artifact(
         new_rows = []
         for mid in machine_ids:
             # Deduplicate by MachineId and Key
-            tags_df = tags_df[~((tags_df["MachineId"] == mid) & (tags_df["Key"] == key))]
+            tags_df = tags_df[
+                ~((tags_df["MachineId"] == mid) & (tags_df["Key"] == key))
+            ]
             new_rows.append({"MachineId": mid, "Key": key, "Value": value})
 
         if new_rows:
@@ -257,7 +263,9 @@ def _transform_in_memory(
             df_disk["CapacityMiB"] = df_disk["Capacity MiB"].apply(clean_number)
             df_disk["SizeInGib"] = df_disk["CapacityMiB"] / 1024.0
             disk_sum = df_disk.groupby("MachineId")["SizeInGib"].sum().reset_index()
-            disk_sum.rename(columns={"SizeInGib": "TotalDiskAllocatedGiB"}, inplace=True)
+            disk_sum.rename(
+                columns={"SizeInGib": "TotalDiskAllocatedGiB"}, inplace=True
+            )
             df_vm = pd.merge(df_info, disk_sum, on="MachineId", how="left")
 
             disk_info["MachineId"] = df_disk["MachineId"]

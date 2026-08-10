@@ -11,8 +11,7 @@ from .app_utils.project_utils import get_project_id
 
 
 async def add_labels_post_import(
-    tool_context: ToolContext,
-    labels_dict: dict[str, dict[str, str]] | None = None
+    tool_context: ToolContext, labels_dict: dict[str, dict[str, str]] | None = None
 ) -> str:
     """Updates labels for assets in Migration Center using native APIs.
 
@@ -41,7 +40,9 @@ async def add_labels_post_import(
                     if m_id not in final_labels_dict:
                         final_labels_dict[m_id] = {}
                     final_labels_dict[m_id][k] = v
-                log(f"Loaded labels for {len(final_labels_dict)} assets from session artifact.")
+                log(
+                    f"Loaded labels for {len(final_labels_dict)} assets from session artifact."
+                )
         except Exception as e:
             log(f"Warning: Failed to load staged labels: {e}")
 
@@ -50,7 +51,11 @@ async def add_labels_post_import(
 
     # 2. Setup MC Client
     project_id = get_project_id()
-    location = os.environ.get("GCP_LOCATION") or os.environ.get("GOOGLE_CLOUD_LOCATION") or "us-central1"
+    location = (
+        os.environ.get("GCP_LOCATION")
+        or os.environ.get("GOOGLE_CLOUD_LOCATION")
+        or "us-central1"
+    )
     if location == "global":
         location = "us-central1"
 
@@ -114,16 +119,20 @@ async def add_labels_post_import(
                         updated_asset.labels[k] = v
 
                     update_mask = field_mask_pb2.FieldMask(paths=["labels"])
-                    client.update_asset(request=migrationcenter_v1.UpdateAssetRequest(
-                        asset=updated_asset, update_mask=update_mask
-                    ))
+                    client.update_asset(
+                        request=migrationcenter_v1.UpdateAssetRequest(
+                            asset=updated_asset, update_mask=update_mask
+                        )
+                    )
                     updated_count += 1
                 except Exception as ex:
                     errors.append(f"Failed {asset_id}: {ex}")
             else:
                 skipped_count += 1
 
-        summary = f"Labeling Complete. Updated: {updated_count}, Skipped: {skipped_count}."
+        summary = (
+            f"Labeling Complete. Updated: {updated_count}, Skipped: {skipped_count}."
+        )
         if errors:
             summary += f" Errors: {len(errors)}"
         return summary + "\nLogs:\n" + "\n".join(logs)

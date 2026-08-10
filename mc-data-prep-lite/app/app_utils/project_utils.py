@@ -10,7 +10,9 @@ def get_project_id():
     and finally Application Default Credentials.
     """
     # 1. Check environment variables
-    project_id = os.environ.get("GCP_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT")
+    project_id = os.environ.get("GCP_PROJECT_ID") or os.environ.get(
+        "GOOGLE_CLOUD_PROJECT"
+    )
     if project_id:
         return project_id
 
@@ -21,7 +23,7 @@ def get_project_id():
             ["gcloud", "config", "get-value", "project"],
             capture_output=True,
             text=True,
-            check=False
+            check=False,
         )
         if result.returncode == 0:
             project_id = result.stdout.strip()

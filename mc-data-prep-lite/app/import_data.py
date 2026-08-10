@@ -11,12 +11,16 @@ from .app_utils.project_utils import get_project_id
 
 async def import_data_to_migration_center(tool_context: ToolContext) -> str:
     """Imports generated CSV files (vmInfo.csv, diskInfo.csv, tagInfo.csv) from session artifacts into Migration Center.
-    
+
     Returns:
         A string indicating success or failure.
     """
     project_id = get_project_id()
-    location = os.environ.get("GCP_LOCATION") or os.environ.get("GOOGLE_CLOUD_LOCATION") or "us-central1"
+    location = (
+        os.environ.get("GCP_LOCATION")
+        or os.environ.get("GOOGLE_CLOUD_LOCATION")
+        or "us-central1"
+    )
 
     if location == "global":
         location = "us-central1"
@@ -41,7 +45,7 @@ async def import_data_to_migration_center(tool_context: ToolContext) -> str:
         source_op = client.create_source(
             parent=parent,
             source_id=source_id,
-            source={"display_name": f"Source {time.strftime('%Y%m%d-%H%M%S')}"}
+            source={"display_name": f"Source {time.strftime('%Y%m%d-%H%M%S')}"},
         )
         source = source_op.result()
         print(f"Asset source created: {source.name}")
@@ -50,7 +54,7 @@ async def import_data_to_migration_center(tool_context: ToolContext) -> str:
 
     import_job = {
         "display_name": f"Manual Import {time.strftime('%Y%m%d-%H%M%S')}",
-        "asset_source": source.name
+        "asset_source": source.name,
     }
     request = migrationcenter_v1.CreateImportJobRequest(
         parent=parent,
@@ -93,9 +97,11 @@ async def import_data_to_migration_center(tool_context: ToolContext) -> str:
                 with open(local_path, "wb") as f:
                     f.write(content_bytes)
             except Exception as e:
-                print(f"File {file_name} not found or error loading from artifacts: {e}")
+                print(
+                    f"File {file_name} not found or error loading from artifacts: {e}"
+                )
                 if file_name == "vmInfo.csv":
-                     failed_files.append(file_name)
+                    failed_files.append(file_name)
                 continue
 
             import_data_file = {"format": "IMPORT_JOB_FORMAT_STRATOZONE_CSV"}
@@ -136,11 +142,16 @@ async def import_data_to_migration_center(tool_context: ToolContext) -> str:
     if failed_files:
         return f"Error: Import aborted due to missing or failed file uploads: {failed_files}. Uploaded: {uploaded_files}. Ensure you have run data transformation first."
 
-    def wait_for_job_state(job_name, target_states, transitioning_states, timeout_sec=600):
+    def wait_for_job_state(
+        job_name, target_states, transitioning_states, timeout_sec=600
+    ):
         start_time = time.time()
         while True:
             if time.time() - start_time > timeout_sec:
-                return None, f"Timeout: Job {job_name} timed out after {timeout_sec}s while waiting for states {target_states}."
+                return (
+                    None,
+                    f"Timeout: Job {job_name} timed out after {timeout_sec}s while waiting for states {target_states}.",
+                )
 
             try:
                 job = client.get_import_job(name=job_name)
@@ -166,23 +177,27 @@ async def import_data_to_migration_center(tool_context: ToolContext) -> str:
         print(f"Job state after validation: {job.state}")
 
         if int(job.state) in [4, 6]:
-             report = job.validation_report
-             error_msgs = []
-             if report:
-                 if report.file_validations:
-                     for fv in report.file_validations:
-                         for err in fv.file_errors:
-                             error_msgs.append(f"File {fv.file_name}: {err.error_details}")
-                         for row_err in fv.row_errors:
-                             for err in row_err.errors:
-                                 error_msgs.append(f"File {fv.file_name} Row {row_err.row_number}: {err.error_details}")
-                 if hasattr(report, 'job_errors') and report.job_errors:
-                     for err in report.job_errors:
-                         error_msgs.append(f"Job: {err.error_details}")
-             return f"Error: Validation failed with state {job.state}. Errors: {'; '.join(error_msgs[:10])}{'...' if len(error_msgs) > 10 else ''}"
+            report = job.validation_report
+            error_msgs = []
+            if report:
+                if report.file_validations:
+                    for fv in report.file_validations:
+                        for err in fv.file_errors:
+                            error_msgs.append(
+                                f"File {fv.file_name}: {err.error_details}"
+                            )
+                        for row_err in fv.row_errors:
+                            for err in row_err.errors:
+                                error_msgs.append(
+                                    f"File {fv.file_name} Row {row_err.row_number}: {err.error_details}"
+                                )
+                if hasattr(report, "job_errors") and report.job_errors:
+                    for err in report.job_errors:
+                        error_msgs.append(f"Job: {err.error_details}")
+            return f"Error: Validation failed with state {job.state}. Errors: {'; '.join(error_msgs[:10])}{'...' if len(error_msgs) > 10 else ''}"
 
         if int(job.state) not in [7, 3]:
-             return f"Error: Validation failed or job stuck. State: {job.state}. Please ensure the generated CSV files are valid Migration Center exports."
+            return f"Error: Validation failed or job stuck. State: {job.state}. Please ensure the generated CSV files are valid Migration Center exports."
     except Exception as e:
         return f"Error: Validation failed: {e}"
 
