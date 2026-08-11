@@ -7,6 +7,95 @@ from google.adk.tools import ToolContext
 from google.genai import types
 
 
+def process_inventory_upload(file_dict: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    # 1. Detect Standard Migration Center CSV
+    if len(file_dict) == 1:
+        df_single = next(iter(file_dict.values()))
+        if "vCPU" in df_single.columns and "Memory (MiB)" in df_single.columns:
+            return df_single
+
+    # 2. Detect RVTools Format
+    expected_rvtools_sheets = ["vInfo", "vCPU", "vMemory", "vPartition"]
+    is_rvtools = all(sheet in file_dict for sheet in expected_rvtools_sheets)
+
+    if is_rvtools:
+        df_vinfo = file_dict["vInfo"]
+        df_vcpu = file_dict["vCPU"]
+        df_vmem = file_dict["vMemory"]
+        df_vpart = file_dict["vPartition"]
+
+        vcpu_data = (
+            df_vcpu[["VM", "CPUs"]].drop_duplicates(subset=["VM"])
+            if "CPUs" in df_vcpu.columns
+            else pd.DataFrame()
+        )
+        vmem_data = (
+            df_vmem[["VM", "Size MiB"]].drop_duplicates(subset=["VM"])
+            if "Size MiB" in df_vmem.columns
+            else pd.DataFrame()
+        )
+
+        if "Capacity MiB" in df_vpart.columns and "Free MiB" in df_vpart.columns:
+            vpart_agg = (
+                df_vpart.groupby("VM")
+                .agg({"Capacity MiB": "sum", "Free MiB": "sum"})
+                .reset_index()
+            )
+        else:
+            vpart_agg = pd.DataFrame()
+
+        # Rename to target columns before merging to avoid naming suffix conflicts (e.g. CPUs_x, CPUs_y)
+        if not vcpu_data.empty:
+            vcpu_data = vcpu_data.rename(columns={"CPUs": "vCPU"})
+        if not vmem_data.empty:
+            vmem_data = vmem_data.rename(columns={"Size MiB": "Memory (MiB)"})
+        if not vpart_agg.empty:
+            vpart_agg = vpart_agg.rename(
+                columns={
+                    "Capacity MiB": "Total storage capacity (MiB)",
+                    "Free MiB": "Total free storage (MiB)",
+                }
+            )
+
+        master_df = df_vinfo.copy()
+        if "CPUs" in master_df.columns and not vcpu_data.empty:
+            master_df = master_df.drop(columns=["CPUs"])
+        if "Memory" in master_df.columns and not vmem_data.empty:
+            master_df = master_df.drop(columns=["Memory"])
+
+        if not vcpu_data.empty:
+            master_df = master_df.merge(vcpu_data, on="VM", how="left")
+        if not vmem_data.empty:
+            master_df = master_df.merge(vmem_data, on="VM", how="left")
+        if not vpart_agg.empty:
+            master_df = master_df.merge(vpart_agg, on="VM", how="left")
+
+        # Safely run final rename as fallback / for other sheets
+        master_df.rename(
+            columns={
+                "CPUs": "vCPU",
+                "Size MiB": "Memory (MiB)",
+                "Capacity MiB": "Total storage capacity (MiB)",
+                "Free MiB": "Total free storage (MiB)",
+            },
+            inplace=True,
+            errors="ignore",
+        )
+
+        if "Total storage capacity (MiB)" in master_df.columns:
+            master_df["Total storage capacity (MiB)"] = master_df[
+                "Total storage capacity (MiB)"
+            ].fillna(0)
+            master_df["Total free storage (MiB)"] = master_df[
+                "Total free storage (MiB)"
+            ].fillna(0)
+
+        return master_df
+
+    # 3. Fallback
+    return next(iter(file_dict.values()))
+
+
 async def process_uploaded_infrastructure_file(
     artifact_id: str, format_type: str, tool_context: ToolContext
 ) -> str:
@@ -80,34 +169,80 @@ async def process_uploaded_infrastructure_file(
             )
             return "Successfully validated and saved tagInfo.csv/staged_labels.csv as session artifacts."
 
-        # In-memory processing for VM/Disk data
+        # Load sheets or CSV
+        file_dict = {}
+        if artifact_id.lower().endswith(".xlsx"):
+            with io.BytesIO(file_bytes) as f:
+                try:
+                    file_dict = pd.read_excel(f, sheet_name=None)
+                except Exception as e:
+                    return f"Error reading Excel file: {e}"
+        else:
+            with io.BytesIO(file_bytes) as f:
+                try:
+                    file_dict = {"default": pd.read_csv(f)}
+                except Exception as e:
+                    return f"Error reading CSV file: {e}"
+
+        # 1. Detect Standard Migration Center CSV
+        is_standard_mc = False
+        if len(file_dict) == 1:
+            df_single = next(iter(file_dict.values()))
+            if "vCPU" in df_single.columns and "Memory (MiB)" in df_single.columns:
+                is_standard_mc = True
+
+        # 2. Detect RVTools Format
+        expected_rvtools_sheets = ["vInfo", "vCPU", "vMemory", "vPartition"]
+        is_rvtools = all(sheet in file_dict for sheet in expected_rvtools_sheets)
+
+        if is_standard_mc:
+            df_single = next(iter(file_dict.values()))
+            await tool_context.save_artifact(
+                "vmInfo.csv", types.Part(text=df_single.to_csv(index=False))
+            )
+            # Create basic staged_labels.csv from Standard MC CSV
+            tags = pd.DataFrame(columns=["MachineId", "Key", "Value"])
+            m_col = (
+                "MachineId"
+                if "MachineId" in df_single.columns
+                else (
+                    "VM"
+                    if "VM" in df_single.columns
+                    else ("MachineName" if "MachineName" in df_single.columns else None)
+                )
+            )
+            if m_col:
+                tags["MachineId"] = df_single[m_col]
+            else:
+                tags["MachineId"] = [f"vm-{i}" for i in range(1, len(df_single) + 1)]
+            tags["Key"] = "source_platform"
+            tags["Value"] = format_type.lower()
+            await tool_context.save_artifact(
+                "staged_labels.csv", types.Part(text=tags.to_csv(index=False))
+            )
+            return (
+                f"Successfully processed {len(df_single)} VMs from Standard MC CSV. "
+                f"Transformed files (vmInfo.csv) have been saved as session artifacts. "
+                f"You can now run 'get_parsed_vms' to review or 'import_data_to_migration_center' to proceed."
+            )
+
         df_info = pd.DataFrame()
         df_disk = pd.DataFrame()
 
-        if format_type.lower() == "vmware":
-            if artifact_id.lower().endswith(".xlsx"):
-                with io.BytesIO(file_bytes) as f:
-                    try:
-                        df_info = pd.read_excel(f, sheet_name="vInfo")
-                        f.seek(0)
-                        df_disk = pd.read_excel(f, sheet_name="vDisk")
-                    except Exception:
-                        return "Error: Could not find 'vInfo' or 'vDisk' sheets in the Excel file."
-            else:
-                with io.BytesIO(file_bytes) as f:
-                    df_info = pd.read_csv(f)
-                    df_disk = pd.DataFrame()
-        elif is_generic_template or format_type.lower() in [
-            "hyperv",
-            "nutanix",
-            "proxmox",
-        ]:
-            with io.BytesIO(file_bytes) as f:
-                df_info = pd.read_csv(f)
-                df_disk = pd.DataFrame()
+        if is_rvtools:
+            df_info = process_inventory_upload(file_dict)
+            df_disk = pd.DataFrame()
         else:
-            with io.BytesIO(file_bytes) as f:
-                df_info = pd.read_csv(f)
+            # Fallback / original non-RVTools parsing logic
+            if format_type.lower() == "vmware":
+                if "vInfo" in file_dict:
+                    df_info = file_dict["vInfo"]
+                    df_disk = file_dict.get("vDisk", pd.DataFrame())
+                else:
+                    df_info = next(iter(file_dict.values()))
+                    df_disk = pd.DataFrame()
+            else:
+                df_info = next(iter(file_dict.values()))
                 df_disk = pd.DataFrame()
 
         if df_info.empty:
@@ -246,14 +381,40 @@ def _transform_in_memory(
             else df_info["VM"]
         )
         df_info["MachineId"] = df_info["MachineName"]
-        df_info["MemoryMiB"] = df_info["Memory"].apply(clean_number)
+
+        if "Memory (MiB)" in df_info.columns:
+            df_info["MemoryMiB"] = df_info["Memory (MiB)"].apply(clean_number)
+        elif "Memory" in df_info.columns:
+            df_info["MemoryMiB"] = df_info["Memory"].apply(clean_number)
+        else:
+            df_info["MemoryMiB"] = 0
         df_info["MemoryGiB"] = df_info["MemoryMiB"] / 1024.0
-        df_info["AllocatedProcessorCoreCount"] = df_info["CPUs"]
+
+        if "vCPU" in df_info.columns:
+            df_info["AllocatedProcessorCoreCount"] = df_info["vCPU"].apply(clean_number)
+        elif "CPUs" in df_info.columns:
+            df_info["AllocatedProcessorCoreCount"] = df_info["CPUs"].apply(clean_number)
+        else:
+            df_info["AllocatedProcessorCoreCount"] = 0
+
         df_info["OsName"] = df_info.get(
             "OS according to the configuration file", df_info.get("OS", "Linux")
         )
 
-        if not df_disk.empty:
+        if "Total storage capacity (MiB)" in df_info.columns:
+            df_info["TotalDiskAllocatedGiB"] = (
+                df_info["Total storage capacity (MiB)"].apply(clean_number) / 1024.0
+            )
+            free_gib = 0.0
+            if "Total free storage (MiB)" in df_info.columns:
+                free_gib = (
+                    df_info["Total free storage (MiB)"].apply(clean_number) / 1024.0
+                )
+            df_info["TotalDiskUsedGiB"] = (
+                df_info["TotalDiskAllocatedGiB"] - free_gib
+            ).clip(lower=0)
+            df_vm = df_info.copy()
+        elif not df_disk.empty:
             df_disk["Path_Name"] = (
                 df_disk["Path"].apply(extract_vm_name)
                 if "Path" in df_disk.columns
@@ -267,6 +428,7 @@ def _transform_in_memory(
                 columns={"SizeInGib": "TotalDiskAllocatedGiB"}, inplace=True
             )
             df_vm = pd.merge(df_info, disk_sum, on="MachineId", how="left")
+            df_vm["TotalDiskUsedGiB"] = df_vm["TotalDiskAllocatedGiB"]
 
             disk_info["MachineId"] = df_disk["MachineId"]
             disk_info["DiskLabel"] = df_disk.get("Disk", "disk-0")
@@ -276,10 +438,12 @@ def _transform_in_memory(
         else:
             df_vm = df_info.copy()
             df_vm["TotalDiskAllocatedGiB"] = 0
+            df_vm["TotalDiskUsedGiB"] = 0
 
         vm_info["MachineId"] = df_vm["MachineId"]
         vm_info["MachineName"] = df_vm["MachineName"]
         vm_info["TotalDiskAllocatedGiB"] = df_vm["TotalDiskAllocatedGiB"]
+        vm_info["TotalDiskUsedGiB"] = df_vm["TotalDiskUsedGiB"]
         vm_info["AllocatedProcessorCoreCount"] = df_vm["AllocatedProcessorCoreCount"]
         vm_info["MemoryGiB"] = df_vm["MemoryGiB"]
         vm_info["OsName"] = df_vm["OsName"]
