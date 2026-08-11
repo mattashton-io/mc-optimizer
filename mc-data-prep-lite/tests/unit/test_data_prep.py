@@ -78,8 +78,8 @@ def test_process_inventory_upload_rvtools_format() -> None:
     assert "Consumed MiB" in result.columns
 
     # Verify joined/aggregated values
-    assert result.loc[result["VM"] == "vm-1", "CPUs"].values[0] == 2
-    assert result.loc[result["VM"] == "vm-2", "CPUs"].values[0] == 4
+    assert result.loc[result["VM"] == "vm-1", "CPUs"].values[0] == 1
+    assert result.loc[result["VM"] == "vm-2", "CPUs"].values[0] == 2
 
     assert result.loc[result["VM"] == "vm-1", "Size MiB"].values[0] == 2048
     assert result.loc[result["VM"] == "vm-2", "Size MiB"].values[0] == 4096

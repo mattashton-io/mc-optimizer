@@ -27,25 +27,17 @@ def process_inventory_upload(file_dict: dict[str, pd.DataFrame]) -> pd.DataFrame
 
     if is_rvtools:
         df_vinfo = file_dict["vInfo"].copy()
-        df_vcpu = file_dict["vCPU"].copy()
         df_vmem = file_dict["vMemory"].copy()
         df_vpart = file_dict["vPartition"].copy()
 
         # Strip trailing/leading spaces from VM names to ensure robust merging
         if "VM" in df_vinfo.columns:
             df_vinfo["VM"] = df_vinfo["VM"].astype(str).str.strip()
-        if "VM" in df_vcpu.columns:
-            df_vcpu["VM"] = df_vcpu["VM"].astype(str).str.strip()
         if "VM" in df_vmem.columns:
             df_vmem["VM"] = df_vmem["VM"].astype(str).str.strip()
         if "VM" in df_vpart.columns:
             df_vpart["VM"] = df_vpart["VM"].astype(str).str.strip()
 
-        vcpu_data = (
-            df_vcpu[["VM", "CPUs"]].drop_duplicates(subset=["VM"])
-            if "CPUs" in df_vcpu.columns
-            else pd.DataFrame()
-        )
         vmem_data = (
             df_vmem[["VM", "Size MiB"]].drop_duplicates(subset=["VM"])
             if "Size MiB" in df_vmem.columns
@@ -61,25 +53,16 @@ def process_inventory_upload(file_dict: dict[str, pd.DataFrame]) -> pd.DataFrame
         else:
             vpart_agg = pd.DataFrame()
 
-        # Rename CPUs and Size MiB in sheet data before merging to prevent conflict with vInfo's own columns
-        if not vcpu_data.empty:
-            vcpu_data = vcpu_data.rename(columns={"CPUs": "vcpu_CPUs"})
+        # Rename Size MiB in sheet data before merging to prevent conflict with vInfo's own columns
         if not vmem_data.empty:
             vmem_data = vmem_data.rename(columns={"Size MiB": "vmem_SizeMiB"})
 
         master_df = df_vinfo.copy()
 
-        if not vcpu_data.empty:
-            master_df = master_df.merge(vcpu_data, on="VM", how="left")
         if not vmem_data.empty:
             master_df = master_df.merge(vmem_data, on="VM", how="left")
         if not vpart_agg.empty:
             master_df = master_df.merge(vpart_agg, on="VM", how="left")
-
-        # Fallback for CPUs: use 'vcpu_CPUs' if present and not NaN, else fall back to 'CPUs' from vInfo
-        if "vcpu_CPUs" in master_df.columns:
-            master_df["CPUs"] = master_df["vcpu_CPUs"].fillna(master_df.get("CPUs", 0))
-            master_df = master_df.drop(columns=["vcpu_CPUs"])
 
         # Fallback for Size MiB: use 'vmem_SizeMiB' if present and not NaN, else fall back to 'Memory' from vInfo
         if "vmem_SizeMiB" in master_df.columns:
@@ -472,7 +455,9 @@ def _transform_in_memory(
 
         # AllocatedProcessorCoreCount
         if "CPUs" in df_info.columns:
-            df_info["AllocatedProcessorCoreCount"] = df_info["CPUs"].apply(clean_number)
+            df_info["AllocatedProcessorCoreCount"] = (
+                df_info["CPUs"].apply(clean_number).fillna(0).astype(int)
+            )
         else:
             df_info["AllocatedProcessorCoreCount"] = 0
 
