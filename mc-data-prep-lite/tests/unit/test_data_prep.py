@@ -22,8 +22,8 @@ def test_process_inventory_upload_standard_mc_csv() -> None:
     df_single = pd.DataFrame(
         {
             "VM": ["vm-1", "vm-2"],
-            "Cores": [2, 4],
-            "Memory (MiB)": [2048, 4096],
+            "AllocatedProcessorCoreCount": [2, 4],
+            "MemoryGiB": [4.0, 8.0],
         }
     )
     file_dict = {"default": df_single}
@@ -32,7 +32,7 @@ def test_process_inventory_upload_standard_mc_csv() -> None:
 
 
 def test_process_inventory_upload_rvtools_format() -> None:
-    """Tests that RVTools format sheets are correctly aggregated, joined, and renamed."""
+    """Tests that RVTools format sheets are correctly aggregated, joined, and fell back."""
     df_vinfo = pd.DataFrame(
         {
             "VM": ["vm-1", "vm-2"],
@@ -44,7 +44,7 @@ def test_process_inventory_upload_rvtools_format() -> None:
     df_vcpu = pd.DataFrame(
         {
             "VM": ["vm-1", "vm-2"],
-            "CPUs": [2, 4],  # Correct vCPU counts from vCPU sheet
+            "CPUs": [2, 4],  # Correct CPU counts from vCPU sheet
         }
     )
     df_vmem = pd.DataFrame(
@@ -58,7 +58,7 @@ def test_process_inventory_upload_rvtools_format() -> None:
             "VM": ["vm-1", "vm-1", "vm-2"],
             "Disk": ["C:\\", "D:\\", "C:\\"],
             "Capacity MiB": [10000, 20000, 30000],
-            "Free MiB": [2000, 4000, 6000],
+            "Consumed MiB": [2000, 4000, 6000],
         }
     )
 
@@ -71,40 +71,30 @@ def test_process_inventory_upload_rvtools_format() -> None:
 
     result = process_inventory_upload(file_dict)
 
-    # Check merged and renamed columns are present
-    assert "Cores" in result.columns
-    assert "Memory (MiB)" in result.columns
-    assert "Total storage capacity (MiB)" in result.columns
-    assert "Total free storage (MiB)" in result.columns
+    # Check merged and target columns are present
+    assert "CPUs" in result.columns
+    assert "Size MiB" in result.columns
+    assert "Capacity MiB" in result.columns
+    assert "Consumed MiB" in result.columns
 
     # Verify joined/aggregated values
-    assert result.loc[result["VM"] == "vm-1", "Cores"].values[0] == 2
-    assert result.loc[result["VM"] == "vm-2", "Cores"].values[0] == 4
+    assert result.loc[result["VM"] == "vm-1", "CPUs"].values[0] == 2
+    assert result.loc[result["VM"] == "vm-2", "CPUs"].values[0] == 4
 
-    assert result.loc[result["VM"] == "vm-1", "Memory (MiB)"].values[0] == 2048
-    assert result.loc[result["VM"] == "vm-2", "Memory (MiB)"].values[0] == 4096
+    assert result.loc[result["VM"] == "vm-1", "Size MiB"].values[0] == 2048
+    assert result.loc[result["VM"] == "vm-2", "Size MiB"].values[0] == 4096
 
-    # vm-1 capacity: 10000 + 20000 = 30000. vm-1 free: 2000 + 4000 = 6000
-    assert (
-        result.loc[result["VM"] == "vm-1", "Total storage capacity (MiB)"].values[0]
-        == 30000
-    )
-    assert (
-        result.loc[result["VM"] == "vm-1", "Total free storage (MiB)"].values[0] == 6000
-    )
+    # vm-1 capacity: 10000 + 20000 = 30000. vm-1 consumed: 2000 + 4000 = 6000
+    assert result.loc[result["VM"] == "vm-1", "Capacity MiB"].values[0] == 30000
+    assert result.loc[result["VM"] == "vm-1", "Consumed MiB"].values[0] == 6000
 
-    # vm-2 capacity: 30000. vm-2 free: 6000
-    assert (
-        result.loc[result["VM"] == "vm-2", "Total storage capacity (MiB)"].values[0]
-        == 30000
-    )
-    assert (
-        result.loc[result["VM"] == "vm-2", "Total free storage (MiB)"].values[0] == 6000
-    )
+    # vm-2 capacity: 30000. vm-2 consumed: 6000
+    assert result.loc[result["VM"] == "vm-2", "Capacity MiB"].values[0] == 30000
+    assert result.loc[result["VM"] == "vm-2", "Consumed MiB"].values[0] == 6000
 
 
 def test_process_inventory_upload_rvtools_fallback_storage() -> None:
-    """Tests that if vPartition has no data, capacity falls back to Total disk capacity MiB and free falls back to In Use MiB difference."""
+    """Tests that if vPartition has no data, Capacity MiB falls back to Total disk capacity MiB and Consumed MiB falls back to In Use MiB."""
     df_vinfo = pd.DataFrame(
         {
             "VM": ["vm-1"],
@@ -117,7 +107,7 @@ def test_process_inventory_upload_rvtools_fallback_storage() -> None:
     df_vcpu = pd.DataFrame({"VM": ["vm-1"], "CPUs": [2]})
     df_vmem = pd.DataFrame({"VM": ["vm-1"], "Size MiB": [2048]})
     df_vpart = pd.DataFrame(
-        columns=["VM", "Capacity MiB", "Free MiB"]
+        columns=["VM", "Capacity MiB", "Consumed MiB"]
     )  # Empty partition sheet
 
     file_dict = {
@@ -129,21 +119,15 @@ def test_process_inventory_upload_rvtools_fallback_storage() -> None:
 
     result = process_inventory_upload(file_dict)
 
-    # Verify that capacity fallback worked
-    assert "Total storage capacity (MiB)" in result.columns
-    assert (
-        result.loc[result["VM"] == "vm-1", "Total storage capacity (MiB)"].values[0]
-        == 50000
-    )
-    # Free storage should fall back to Total capacity (50000) - In Use MiB (15000) = 35000
-    assert (
-        result.loc[result["VM"] == "vm-1", "Total free storage (MiB)"].values[0]
-        == 35000
-    )
+    # Verify that capacity and consumed fallback worked
+    assert "Capacity MiB" in result.columns
+    assert "Consumed MiB" in result.columns
+    assert result.loc[result["VM"] == "vm-1", "Capacity MiB"].values[0] == 50000
+    assert result.loc[result["VM"] == "vm-1", "Consumed MiB"].values[0] == 15000
 
 
 def test_process_inventory_upload_failsafe_fallbacks() -> None:
-    """Tests that if sheets fail to join (e.g. mismatched VM names or empty sheets), Cores and Memory fall back to vInfo values."""
+    """Tests that if sheets fail to join (e.g. mismatched VM names or empty sheets), CPUs and Size MiB fall back to vInfo values."""
     df_vinfo = pd.DataFrame(
         {
             "VM": ["vm-1"],
@@ -153,7 +137,7 @@ def test_process_inventory_upload_failsafe_fallbacks() -> None:
     )
     df_vcpu = pd.DataFrame({"VM": ["vm-mismatched"], "CPUs": [2]})
     df_vmem = pd.DataFrame({"VM": ["vm-mismatched"], "Size MiB": [2048]})
-    df_vpart = pd.DataFrame(columns=["VM", "Capacity MiB", "Free MiB"])
+    df_vpart = pd.DataFrame(columns=["VM", "Capacity MiB", "Consumed MiB"])
 
     file_dict = {
         "vInfo": df_vinfo,
@@ -164,11 +148,11 @@ def test_process_inventory_upload_failsafe_fallbacks() -> None:
 
     result = process_inventory_upload(file_dict)
 
-    # Cores and Memory should safely fall back to the vInfo values since join was empty/mismatched
-    assert "Cores" in result.columns
-    assert "Memory (MiB)" in result.columns
-    assert result.loc[result["VM"] == "vm-1", "Cores"].values[0] == 8
-    assert result.loc[result["VM"] == "vm-1", "Memory (MiB)"].values[0] == 16384
+    # CPUs and Size MiB should safely fall back to the vInfo values since join was empty/mismatched
+    assert "CPUs" in result.columns
+    assert "Size MiB" in result.columns
+    assert result.loc[result["VM"] == "vm-1", "CPUs"].values[0] == 8
+    assert result.loc[result["VM"] == "vm-1", "Size MiB"].values[0] == 16384
 
 
 def test_process_inventory_upload_fallback() -> None:

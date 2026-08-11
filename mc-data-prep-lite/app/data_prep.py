@@ -16,8 +16,9 @@ def process_inventory_upload(file_dict: dict[str, pd.DataFrame]) -> pd.DataFrame
     if len(file_dict) == 1:
         df_single = next(iter(file_dict.values()))
         if (
-            "Cores" in df_single.columns or "vCPU" in df_single.columns
-        ) and "Memory (MiB)" in df_single.columns:
+            "AllocatedProcessorCoreCount" in df_single.columns
+            and "MemoryGiB" in df_single.columns
+        ):
             return df_single
 
     # 2. Detect RVTools Format
@@ -51,27 +52,20 @@ def process_inventory_upload(file_dict: dict[str, pd.DataFrame]) -> pd.DataFrame
             else pd.DataFrame()
         )
 
-        if "Capacity MiB" in df_vpart.columns and "Free MiB" in df_vpart.columns:
+        if "Capacity MiB" in df_vpart.columns and "Consumed MiB" in df_vpart.columns:
             vpart_agg = (
                 df_vpart.groupby("VM")
-                .agg({"Capacity MiB": "sum", "Free MiB": "sum"})
+                .agg({"Capacity MiB": "sum", "Consumed MiB": "sum"})
                 .reset_index()
             )
         else:
             vpart_agg = pd.DataFrame()
 
-        # Rename to target columns before merging to avoid naming suffix conflicts (e.g. CPUs_x, CPUs_y)
+        # Rename CPUs and Size MiB in sheet data before merging to prevent conflict with vInfo's own columns
         if not vcpu_data.empty:
-            vcpu_data = vcpu_data.rename(columns={"CPUs": "Cores"})
+            vcpu_data = vcpu_data.rename(columns={"CPUs": "vcpu_CPUs"})
         if not vmem_data.empty:
-            vmem_data = vmem_data.rename(columns={"Size MiB": "Memory (MiB)"})
-        if not vpart_agg.empty:
-            vpart_agg = vpart_agg.rename(
-                columns={
-                    "Capacity MiB": "Total storage capacity (MiB)",
-                    "Free MiB": "Total free storage (MiB)",
-                }
-            )
+            vmem_data = vmem_data.rename(columns={"Size MiB": "vmem_SizeMiB"})
 
         master_df = df_vinfo.copy()
 
@@ -82,54 +76,34 @@ def process_inventory_upload(file_dict: dict[str, pd.DataFrame]) -> pd.DataFrame
         if not vpart_agg.empty:
             master_df = master_df.merge(vpart_agg, on="VM", how="left")
 
-        # Fallback for CPU cores: if 'Cores' is not in columns or is NaN, fall back to 'CPUs' from vInfo
-        if "Cores" not in master_df.columns:
-            master_df["Cores"] = master_df["CPUs"] if "CPUs" in master_df.columns else 0
-        elif "CPUs" in master_df.columns:
-            master_df["Cores"] = master_df["Cores"].fillna(master_df["CPUs"])
+        # Fallback for CPUs: use 'vcpu_CPUs' if present and not NaN, else fall back to 'CPUs' from vInfo
+        if "vcpu_CPUs" in master_df.columns:
+            master_df["CPUs"] = master_df["vcpu_CPUs"].fillna(master_df.get("CPUs", 0))
+            master_df = master_df.drop(columns=["vcpu_CPUs"])
 
-        # Fallback for Memory: if 'Memory (MiB)' is not in columns or is NaN, fall back to 'Memory' from vInfo
-        if "Memory (MiB)" not in master_df.columns:
-            master_df["Memory (MiB)"] = (
-                master_df["Memory"] if "Memory" in master_df.columns else 0
+        # Fallback for Size MiB: use 'vmem_SizeMiB' if present and not NaN, else fall back to 'Memory' from vInfo
+        if "vmem_SizeMiB" in master_df.columns:
+            master_df["Size MiB"] = master_df["vmem_SizeMiB"].fillna(
+                master_df.get("Memory", 0)
             )
+            master_df = master_df.drop(columns=["vmem_SizeMiB"])
         elif "Memory" in master_df.columns:
-            master_df["Memory (MiB)"] = master_df["Memory (MiB)"].fillna(
-                master_df["Memory"]
-            )
+            master_df["Size MiB"] = master_df["Memory"]
 
-        # Drop the original 'CPUs' and 'Memory' columns to clean up the dataframe
-        if "CPUs" in master_df.columns:
-            master_df = master_df.drop(columns=["CPUs"])
-        if "Memory" in master_df.columns:
-            master_df = master_df.drop(columns=["Memory"])
-
-        # Safely run final rename as fallback / for other sheets
-        master_df.rename(
-            columns={
-                "CPUs": "Cores",
-                "Size MiB": "Memory (MiB)",
-                "Capacity MiB": "Total storage capacity (MiB)",
-                "Free MiB": "Total free storage (MiB)",
-            },
-            inplace=True,
-            errors="ignore",
-        )
-
-        if "Total storage capacity (MiB)" not in master_df.columns:
-            master_df["Total storage capacity (MiB)"] = 0
-            master_df["Total free storage (MiB)"] = 0
+        # Fallback for Capacity MiB / Consumed MiB if vPartition had no data
+        if "Capacity MiB" not in master_df.columns:
+            master_df["Capacity MiB"] = 0.0
+            master_df["Consumed MiB"] = 0.0
 
         if "Total disk capacity MiB" in master_df.columns:
-            # Fallback to hardware disk capacity if OS partitions sheet had no info
-            zero_mask = (master_df["Total storage capacity (MiB)"] == 0) | master_df[
-                "Total storage capacity (MiB)"
+            zero_mask = (master_df["Capacity MiB"] == 0) | master_df[
+                "Capacity MiB"
             ].isna()
-            master_df.loc[zero_mask, "Total storage capacity (MiB)"] = master_df.loc[
+            master_df.loc[zero_mask, "Capacity MiB"] = master_df.loc[
                 zero_mask, "Total disk capacity MiB"
             ]
 
-            # If partitions had no free storage info, try to calculate from In Use MiB
+            # Fallback for Consumed MiB using In Use MiB
             if "In Use MiB" in master_df.columns:
 
                 def clean_val(val):
@@ -144,22 +118,10 @@ def process_inventory_upload(file_dict: dict[str, pd.DataFrame]) -> pd.DataFrame
                     return float(val)
 
                 in_use_mib = master_df["In Use MiB"].apply(clean_val).fillna(0)
-                free_calc = (
-                    master_df["Total storage capacity (MiB)"] - in_use_mib
-                ).clip(lower=0)
-                free_zero_mask = (
-                    master_df["Total free storage (MiB)"] == 0
-                ) | master_df["Total free storage (MiB)"].isna()
-                master_df.loc[
-                    zero_mask & free_zero_mask, "Total free storage (MiB)"
-                ] = free_calc.loc[zero_mask & free_zero_mask]
+                master_df.loc[zero_mask, "Consumed MiB"] = in_use_mib.loc[zero_mask]
 
-        master_df["Total storage capacity (MiB)"] = master_df[
-            "Total storage capacity (MiB)"
-        ].fillna(0)
-        master_df["Total free storage (MiB)"] = master_df[
-            "Total free storage (MiB)"
-        ].fillna(0)
+        master_df["Capacity MiB"] = master_df["Capacity MiB"].fillna(0)
+        master_df["Consumed MiB"] = master_df["Consumed MiB"].fillna(0)
 
         return master_df
 
