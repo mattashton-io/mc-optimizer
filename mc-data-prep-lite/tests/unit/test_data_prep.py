@@ -103,6 +103,74 @@ def test_process_inventory_upload_rvtools_format() -> None:
     )
 
 
+def test_process_inventory_upload_rvtools_fallback_storage() -> None:
+    """Tests that if vPartition has no data, capacity falls back to Total disk capacity MiB and free falls back to In Use MiB difference."""
+    df_vinfo = pd.DataFrame(
+        {
+            "VM": ["vm-1"],
+            "CPUs": [2],
+            "Memory": [2048],
+            "Total disk capacity MiB": [50000],  # Hardware disk capacity fallback
+            "In Use MiB": [15000],  # Hardware used disk fallback
+        }
+    )
+    df_vcpu = pd.DataFrame({"VM": ["vm-1"], "CPUs": [2]})
+    df_vmem = pd.DataFrame({"VM": ["vm-1"], "Size MiB": [2048]})
+    df_vpart = pd.DataFrame(
+        columns=["VM", "Capacity MiB", "Free MiB"]
+    )  # Empty partition sheet
+
+    file_dict = {
+        "vInfo": df_vinfo,
+        "vCPU": df_vcpu,
+        "vMemory": df_vmem,
+        "vPartition": df_vpart,
+    }
+
+    result = process_inventory_upload(file_dict)
+
+    # Verify that capacity fallback worked
+    assert "Total storage capacity (MiB)" in result.columns
+    assert (
+        result.loc[result["VM"] == "vm-1", "Total storage capacity (MiB)"].values[0]
+        == 50000
+    )
+    # Free storage should fall back to Total capacity (50000) - In Use MiB (15000) = 35000
+    assert (
+        result.loc[result["VM"] == "vm-1", "Total free storage (MiB)"].values[0]
+        == 35000
+    )
+
+
+def test_process_inventory_upload_failsafe_fallbacks() -> None:
+    """Tests that if sheets fail to join (e.g. mismatched VM names or empty sheets), vCPU and Memory fall back to vInfo values."""
+    df_vinfo = pd.DataFrame(
+        {
+            "VM": ["vm-1"],
+            "CPUs": [8],  # Fail-safe CPUs in vInfo
+            "Memory": [16384],  # Fail-safe Memory in vInfo
+        }
+    )
+    df_vcpu = pd.DataFrame({"VM": ["vm-mismatched"], "CPUs": [2]})
+    df_vmem = pd.DataFrame({"VM": ["vm-mismatched"], "Size MiB": [2048]})
+    df_vpart = pd.DataFrame(columns=["VM", "Capacity MiB", "Free MiB"])
+
+    file_dict = {
+        "vInfo": df_vinfo,
+        "vCPU": df_vcpu,
+        "vMemory": df_vmem,
+        "vPartition": df_vpart,
+    }
+
+    result = process_inventory_upload(file_dict)
+
+    # Cores and Memory should safely fall back to the vInfo values since join was empty/mismatched
+    assert "vCPU" in result.columns
+    assert "Memory (MiB)" in result.columns
+    assert result.loc[result["VM"] == "vm-1", "vCPU"].values[0] == 8
+    assert result.loc[result["VM"] == "vm-1", "Memory (MiB)"].values[0] == 16384
+
+
 def test_process_inventory_upload_fallback() -> None:
     """Tests that process_inventory_upload returns the first sheet as fallback if formats don't match."""
     df_any = pd.DataFrame(

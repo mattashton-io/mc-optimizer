@@ -8,6 +8,10 @@ from google.genai import types
 
 
 def process_inventory_upload(file_dict: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    # Standardize column headers by stripping whitespace
+    for sheet in file_dict:
+        file_dict[sheet].columns = file_dict[sheet].columns.str.strip()
+
     # 1. Detect Standard Migration Center CSV
     if len(file_dict) == 1:
         df_single = next(iter(file_dict.values()))
@@ -19,10 +23,20 @@ def process_inventory_upload(file_dict: dict[str, pd.DataFrame]) -> pd.DataFrame
     is_rvtools = all(sheet in file_dict for sheet in expected_rvtools_sheets)
 
     if is_rvtools:
-        df_vinfo = file_dict["vInfo"]
-        df_vcpu = file_dict["vCPU"]
-        df_vmem = file_dict["vMemory"]
-        df_vpart = file_dict["vPartition"]
+        df_vinfo = file_dict["vInfo"].copy()
+        df_vcpu = file_dict["vCPU"].copy()
+        df_vmem = file_dict["vMemory"].copy()
+        df_vpart = file_dict["vPartition"].copy()
+
+        # Strip trailing/leading spaces from VM names to ensure robust merging
+        if "VM" in df_vinfo.columns:
+            df_vinfo["VM"] = df_vinfo["VM"].astype(str).str.strip()
+        if "VM" in df_vcpu.columns:
+            df_vcpu["VM"] = df_vcpu["VM"].astype(str).str.strip()
+        if "VM" in df_vmem.columns:
+            df_vmem["VM"] = df_vmem["VM"].astype(str).str.strip()
+        if "VM" in df_vpart.columns:
+            df_vpart["VM"] = df_vpart["VM"].astype(str).str.strip()
 
         vcpu_data = (
             df_vcpu[["VM", "CPUs"]].drop_duplicates(subset=["VM"])
@@ -58,10 +72,6 @@ def process_inventory_upload(file_dict: dict[str, pd.DataFrame]) -> pd.DataFrame
             )
 
         master_df = df_vinfo.copy()
-        if "CPUs" in master_df.columns and not vcpu_data.empty:
-            master_df = master_df.drop(columns=["CPUs"])
-        if "Memory" in master_df.columns and not vmem_data.empty:
-            master_df = master_df.drop(columns=["Memory"])
 
         if not vcpu_data.empty:
             master_df = master_df.merge(vcpu_data, on="VM", how="left")
@@ -69,6 +79,28 @@ def process_inventory_upload(file_dict: dict[str, pd.DataFrame]) -> pd.DataFrame
             master_df = master_df.merge(vmem_data, on="VM", how="left")
         if not vpart_agg.empty:
             master_df = master_df.merge(vpart_agg, on="VM", how="left")
+
+        # Fallback for CPU cores: if 'vCPU' is not in columns or is NaN, fall back to 'CPUs' from vInfo
+        if "vCPU" not in master_df.columns:
+            master_df["vCPU"] = master_df["CPUs"] if "CPUs" in master_df.columns else 0
+        elif "CPUs" in master_df.columns:
+            master_df["vCPU"] = master_df["vCPU"].fillna(master_df["CPUs"])
+
+        # Fallback for Memory: if 'Memory (MiB)' is not in columns or is NaN, fall back to 'Memory' from vInfo
+        if "Memory (MiB)" not in master_df.columns:
+            master_df["Memory (MiB)"] = (
+                master_df["Memory"] if "Memory" in master_df.columns else 0
+            )
+        elif "Memory" in master_df.columns:
+            master_df["Memory (MiB)"] = master_df["Memory (MiB)"].fillna(
+                master_df["Memory"]
+            )
+
+        # Drop the original 'CPUs' and 'Memory' columns to clean up the dataframe
+        if "CPUs" in master_df.columns:
+            master_df = master_df.drop(columns=["CPUs"])
+        if "Memory" in master_df.columns:
+            master_df = master_df.drop(columns=["Memory"])
 
         # Safely run final rename as fallback / for other sheets
         master_df.rename(
@@ -82,13 +114,50 @@ def process_inventory_upload(file_dict: dict[str, pd.DataFrame]) -> pd.DataFrame
             errors="ignore",
         )
 
-        if "Total storage capacity (MiB)" in master_df.columns:
-            master_df["Total storage capacity (MiB)"] = master_df[
+        if "Total storage capacity (MiB)" not in master_df.columns:
+            master_df["Total storage capacity (MiB)"] = 0
+            master_df["Total free storage (MiB)"] = 0
+
+        if "Total disk capacity MiB" in master_df.columns:
+            # Fallback to hardware disk capacity if OS partitions sheet had no info
+            zero_mask = (master_df["Total storage capacity (MiB)"] == 0) | master_df[
                 "Total storage capacity (MiB)"
-            ].fillna(0)
-            master_df["Total free storage (MiB)"] = master_df[
-                "Total free storage (MiB)"
-            ].fillna(0)
+            ].isna()
+            master_df.loc[zero_mask, "Total storage capacity (MiB)"] = master_df.loc[
+                zero_mask, "Total disk capacity MiB"
+            ]
+
+            # If partitions had no free storage info, try to calculate from In Use MiB
+            if "In Use MiB" in master_df.columns:
+
+                def clean_val(val):
+                    if pd.isna(val):
+                        return 0.0
+                    if isinstance(val, str):
+                        val = val.replace(",", "").replace('"', "")
+                        try:
+                            return float(val)
+                        except ValueError:
+                            return 0.0
+                    return float(val)
+
+                in_use_mib = master_df["In Use MiB"].apply(clean_val).fillna(0)
+                free_calc = (
+                    master_df["Total storage capacity (MiB)"] - in_use_mib
+                ).clip(lower=0)
+                free_zero_mask = (
+                    master_df["Total free storage (MiB)"] == 0
+                ) | master_df["Total free storage (MiB)"].isna()
+                master_df.loc[
+                    zero_mask & free_zero_mask, "Total free storage (MiB)"
+                ] = free_calc.loc[zero_mask & free_zero_mask]
+
+        master_df["Total storage capacity (MiB)"] = master_df[
+            "Total storage capacity (MiB)"
+        ].fillna(0)
+        master_df["Total free storage (MiB)"] = master_df[
+            "Total free storage (MiB)"
+        ].fillna(0)
 
         return master_df
 
@@ -183,6 +252,10 @@ async def process_uploaded_infrastructure_file(
                     file_dict = {"default": pd.read_csv(f)}
                 except Exception as e:
                     return f"Error reading CSV file: {e}"
+
+        # Standardize column headers by stripping whitespace
+        for sheet in file_dict:
+            file_dict[sheet].columns = file_dict[sheet].columns.str.strip()
 
         # 1. Detect Standard Migration Center CSV
         is_standard_mc = False
