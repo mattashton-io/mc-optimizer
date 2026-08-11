@@ -141,14 +141,10 @@ async def process_uploaded_infrastructure_file(
         # Check for raw RVTools .xlsx file pass-through
         if artifact_id.lower().endswith(".xlsx"):
             print(
-                "Notice: Detected a raw RVTools (.xlsx) file. Google Cloud Migration Center natively supports this format. Bypassing CSV conversion and uploading directly..."
+                "Notice: Detected a raw RVTools (.xlsx) file. Google Cloud Migration Center natively supports this format. Staging raw 'rvtools.xlsx' artifact for direct upload..."
             )
             # Save the raw bytes directly as 'rvtools.xlsx' artifact for direct upload
             await tool_context.save_artifact("rvtools.xlsx", part)
-            return (
-                "Notice: Detected a raw RVTools (.xlsx) file. Google Cloud Migration Center natively supports this format. "
-                "Bypassing CSV conversion and uploading directly... Staged raw 'rvtools.xlsx' artifact successfully."
-            )
 
         # Detect structure
         is_generic_template = False
@@ -303,11 +299,15 @@ async def process_uploaded_infrastructure_file(
             types.Part(text=transformed["tags"].to_csv(index=False)),
         )
 
-        return (
+        success_msg = (
             f"Successfully processed {len(transformed['vms'])} VMs from {format_type}. "
             f"Transformed files (vmInfo.csv) have been saved as session artifacts. "
-            f"You can now run 'get_parsed_vms' to review or 'import_data_to_migration_center' to proceed."
         )
+        if artifact_id.lower().endswith(".xlsx"):
+            success_msg += "Notice: Detected a raw RVTools (.xlsx) file. Staged raw 'rvtools.xlsx' artifact successfully for native Google Cloud Migration Center import. "
+        success_msg += "You can now run 'get_parsed_vms' to review or 'import_data_to_migration_center' to proceed."
+
+        return success_msg
 
     except Exception as e:
         return f"Error processing artifact: {e}"

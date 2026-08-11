@@ -119,3 +119,66 @@ async def test_assign_assets_to_groups_with_mixed_types_in_param(
             "projects/test-project/locations/us-central1/assets/vm-3",
             "projects/test-project/locations/us-central1/assets/123.0",
         ]
+
+
+@pytest.mark.asyncio
+async def test_assign_assets_to_groups_by_vm_name_or_bios_uuid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Set mock environment variables
+    monkeypatch.setenv("GCP_PROJECT_ID", "test-project")
+    monkeypatch.setenv("GCP_LOCATION", "us-central1")
+
+    # Mock google auth
+    mock_credentials = MagicMock()
+    mock_credentials.token = "fake-token"
+    mock_auth_default = MagicMock(return_value=(mock_credentials, "test-project"))
+
+    # Mock MigrationCenterClient and list_assets
+    mock_client_instance = MagicMock()
+    mock_client_instance.get_group.return_value = MagicMock()  # Group already exists
+
+    # Mock assets returned by list_assets
+    asset_1 = MagicMock()
+    asset_1.name = "projects/test-project/locations/us-central1/assets/asset-sys-id-1"
+    asset_1.virtual_machine_details = MagicMock()
+    asset_1.virtual_machine_details.vm_name = "my-vm-name"
+    asset_1.virtual_machine_details.bios_uuid = "uuid-11111"
+
+    asset_2 = MagicMock()
+    asset_2.name = "projects/test-project/locations/us-central1/assets/asset-sys-id-2"
+    asset_2.virtual_machine_details = MagicMock()
+    asset_2.virtual_machine_details.vm_name = "other-vm-name"
+    asset_2.virtual_machine_details.bios_uuid = "uuid-22222"
+
+    mock_client_instance.list_assets.return_value = [asset_1, asset_2]
+
+    # Mock requests.post
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.text = "Success"
+
+    with (
+        patch("google.auth.default", mock_auth_default),
+        patch(
+            "app.assign_groups.migrationcenter_v1.MigrationCenterClient",
+            return_value=mock_client_instance,
+        ),
+        patch("requests.post", return_value=mock_response) as mock_post,
+    ):
+        # We pass asset IDs using a mix of VM Name, BIOS UUID, and a system ID
+        res = await assign_assets_to_groups(
+            group_id="all-servers",
+            asset_ids=["my-vm-name", "uuid-22222", "asset-sys-id-1"],
+            tool_context=MagicMock(),
+        )
+
+        assert "Success: Assigned 3 assets" in res
+
+        # Verify correct asset ID mapping from list_assets
+        _called_args, called_kwargs = mock_post.call_args
+        called_json = called_kwargs["json"]
+        assert set(called_json["assets"]["assetIds"]) == {
+            "projects/test-project/locations/us-central1/assets/asset-sys-id-1",
+            "projects/test-project/locations/us-central1/assets/asset-sys-id-2",
+        }

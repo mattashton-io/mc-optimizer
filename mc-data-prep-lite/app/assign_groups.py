@@ -152,22 +152,69 @@ async def assign_assets_to_groups(
     # 4. Add Assets to Group
     log(f"Adding {len(final_asset_ids)} assets to group '{group_id}'...")
 
-    full_asset_names = []
-    for aid in final_asset_ids:
-        if aid.startswith("projects/"):
-            full_asset_names.append(aid)
-        else:
-            full_asset_names.append(f"{parent}/assets/{aid}")
+    mapped_asset_names = []
+    unmapped_ids = []
+
+    try:
+        log("Listing assets from Migration Center to resolve asset IDs...")
+        assets_pager = client.list_assets(parent=parent)
+        assets_list = list(assets_pager)
+    except Exception as e:
+        log(f"Warning: Failed to list assets from Migration Center: {e}. Falling back to direct construction.")
+        assets_list = []
+
+    if assets_list:
+        for aid in final_asset_ids:
+            if aid.startswith("projects/"):
+                mapped_asset_names.append(aid)
+                continue
+
+            aid_clean = aid.lower().strip()
+            matched = False
+
+            for asset in assets_list:
+                asset_full_name = asset.name
+                asset_id = asset.name.split("/")[-1].lower().strip()
+
+                vm_details = getattr(asset, "virtual_machine_details", None)
+                vm_name = ""
+                bios_uuid = ""
+                if vm_details:
+                    vm_name = (getattr(vm_details, "vm_name", "") or "").lower().strip()
+                    bios_uuid = (getattr(vm_details, "bios_uuid", "") or "").lower().strip()
+
+                if (
+                    aid_clean == asset_id
+                    or (vm_name and aid_clean == vm_name)
+                    or (bios_uuid and aid_clean == bios_uuid)
+                ):
+                    mapped_asset_names.append(asset_full_name)
+                    matched = True
+                    break
+
+            if not matched:
+                unmapped_ids.append(aid)
+
+    if not mapped_asset_names:
+        log("No matching asset IDs resolved via VM details. Falling back to direct asset ID construction...")
+        for aid in final_asset_ids:
+            if aid.startswith("projects/"):
+                mapped_asset_names.append(aid)
+            else:
+                mapped_asset_names.append(f"{parent}/assets/{aid}")
+    else:
+        if unmapped_ids:
+            log(f"Note: Could not find matching Migration Center assets for {len(unmapped_ids)} IDs: {unmapped_ids[:5]}...")
 
     url = f"https://migrationcenter.googleapis.com/v1/{group_name}:addAssets"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    body = {"assets": {"assetIds": full_asset_names}, "allowExisting": True}
+    body = {"assets": {"assetIds": mapped_asset_names}, "allowExisting": True}
 
     try:
         resp = requests.post(url, headers=headers, json=body)
         if resp.status_code == 200:
             return (
-                f"Success: Assigned {len(final_asset_ids)} assets to group '{group_id}'.\n"
+                f"Success: Assigned {len(mapped_asset_names)} assets to group '{group_id}'.\n"
                 + "\n".join(logs)
             )
         else:

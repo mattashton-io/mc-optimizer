@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import pandas as pd
+import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.data_prep import _transform_in_memory, process_inventory_upload
 
@@ -231,3 +233,52 @@ def test_process_inventory_upload_fallback() -> None:
     file_dict = {"some_other_sheet": df_any}
     result = process_inventory_upload(file_dict)
     pd.testing.assert_frame_equal(result, df_any)
+
+
+@pytest.mark.asyncio
+async def test_process_uploaded_infrastructure_file_xlsx_passthrough() -> None:
+    # Prepare dummy sheets for pd.read_excel
+    df_vinfo = pd.DataFrame({
+        "VM": ["my-rvtools-vm-1"],
+        "VM UUID": ["uuid-12345"],
+        "CPUs": [4],
+        "Memory": [4096],
+    })
+    df_vcpu = pd.DataFrame({"VM": ["my-rvtools-vm-1"], "CPUs": [4]})
+    df_vmem = pd.DataFrame({"VM": ["my-rvtools-vm-1"], "Size MiB": [4096]})
+    df_vpart = pd.DataFrame(columns=["VM", "Capacity MiB", "Consumed MiB"])
+
+    mock_sheets = {
+        "vInfo": df_vinfo,
+        "vCPU": df_vcpu,
+        "vMemory": df_vmem,
+        "vPartition": df_vpart,
+    }
+
+    mock_part = MagicMock()
+    mock_part.inline_data = MagicMock()
+    mock_part.inline_data.data = b"dummy_xlsx_content"
+    mock_part.text = None
+
+    mock_tool_context = MagicMock()
+    mock_tool_context.load_artifact = AsyncMock(return_value=mock_part)
+    mock_tool_context.save_artifact = AsyncMock()
+
+    from app.data_prep import process_uploaded_infrastructure_file
+
+    with patch("pandas.read_excel", return_value=mock_sheets):
+        result = await process_uploaded_infrastructure_file(
+            artifact_id="rvtools_export.xlsx",
+            format_type="vmware",
+            tool_context=mock_tool_context
+        )
+
+    # 1. Verify success message contains notice about raw RVTools .xlsx staging
+    assert "Successfully processed 1 VMs" in result
+    assert "Staged raw 'rvtools.xlsx' artifact successfully" in result
+
+    # 2. Verify all expected artifacts are saved
+    saved_artifacts = [call[0][0] for call in mock_tool_context.save_artifact.call_args_list]
+    assert "rvtools.xlsx" in saved_artifacts
+    assert "vmInfo.csv" in saved_artifacts
+    assert "staged_labels.csv" in saved_artifacts

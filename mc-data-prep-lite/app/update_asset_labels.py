@@ -86,12 +86,25 @@ async def add_labels_post_import(
         # 3. Process Updates per Asset
         for asset in assets:
             asset_full_name = asset.name
-            asset_id = asset.name.split("/")[-1].lower()
+            asset_id = asset.name.split("/")[-1].lower().strip()
 
-            # Find metadata for this asset (case-insensitive ID match)
+            # Get VM details if available
+            vm_details = getattr(asset, "virtual_machine_details", None)
+            vm_name = ""
+            bios_uuid = ""
+            if vm_details:
+                vm_name = (getattr(vm_details, "vm_name", "") or "").lower().strip()
+                bios_uuid = (getattr(vm_details, "bios_uuid", "") or "").lower().strip()
+
+            # Find metadata for this asset (case-insensitive ID, name, or bios_uuid match)
             new_labels = None
             for m_id, labels in final_labels_dict.items():
-                if m_id.lower() == asset_id:
+                m_id_clean = m_id.lower().strip()
+                if (
+                    m_id_clean == asset_id
+                    or (vm_name and m_id_clean == vm_name)
+                    or (bios_uuid and m_id_clean == bios_uuid)
+                ):
                     new_labels = labels
                     break
 
