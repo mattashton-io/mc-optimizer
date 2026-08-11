@@ -15,7 +15,9 @@ def process_inventory_upload(file_dict: dict[str, pd.DataFrame]) -> pd.DataFrame
     # 1. Detect Standard Migration Center CSV
     if len(file_dict) == 1:
         df_single = next(iter(file_dict.values()))
-        if "vCPU" in df_single.columns and "Memory (MiB)" in df_single.columns:
+        if (
+            "Cores" in df_single.columns or "vCPU" in df_single.columns
+        ) and "Memory (MiB)" in df_single.columns:
             return df_single
 
     # 2. Detect RVTools Format
@@ -60,7 +62,7 @@ def process_inventory_upload(file_dict: dict[str, pd.DataFrame]) -> pd.DataFrame
 
         # Rename to target columns before merging to avoid naming suffix conflicts (e.g. CPUs_x, CPUs_y)
         if not vcpu_data.empty:
-            vcpu_data = vcpu_data.rename(columns={"CPUs": "vCPU"})
+            vcpu_data = vcpu_data.rename(columns={"CPUs": "Cores"})
         if not vmem_data.empty:
             vmem_data = vmem_data.rename(columns={"Size MiB": "Memory (MiB)"})
         if not vpart_agg.empty:
@@ -80,11 +82,11 @@ def process_inventory_upload(file_dict: dict[str, pd.DataFrame]) -> pd.DataFrame
         if not vpart_agg.empty:
             master_df = master_df.merge(vpart_agg, on="VM", how="left")
 
-        # Fallback for CPU cores: if 'vCPU' is not in columns or is NaN, fall back to 'CPUs' from vInfo
-        if "vCPU" not in master_df.columns:
-            master_df["vCPU"] = master_df["CPUs"] if "CPUs" in master_df.columns else 0
+        # Fallback for CPU cores: if 'Cores' is not in columns or is NaN, fall back to 'CPUs' from vInfo
+        if "Cores" not in master_df.columns:
+            master_df["Cores"] = master_df["CPUs"] if "CPUs" in master_df.columns else 0
         elif "CPUs" in master_df.columns:
-            master_df["vCPU"] = master_df["vCPU"].fillna(master_df["CPUs"])
+            master_df["Cores"] = master_df["Cores"].fillna(master_df["CPUs"])
 
         # Fallback for Memory: if 'Memory (MiB)' is not in columns or is NaN, fall back to 'Memory' from vInfo
         if "Memory (MiB)" not in master_df.columns:
@@ -105,7 +107,7 @@ def process_inventory_upload(file_dict: dict[str, pd.DataFrame]) -> pd.DataFrame
         # Safely run final rename as fallback / for other sheets
         master_df.rename(
             columns={
-                "CPUs": "vCPU",
+                "CPUs": "Cores",
                 "Size MiB": "Memory (MiB)",
                 "Capacity MiB": "Total storage capacity (MiB)",
                 "Free MiB": "Total free storage (MiB)",
@@ -461,30 +463,29 @@ def _transform_in_memory(
             df_info["MemoryMiB"] = df_info["Memory"].apply(clean_number)
         else:
             df_info["MemoryMiB"] = 0
-        df_info["MemoryGiB"] = df_info["MemoryMiB"] / 1024.0
 
-        if "vCPU" in df_info.columns:
-            df_info["AllocatedProcessorCoreCount"] = df_info["vCPU"].apply(clean_number)
+        if "Cores" in df_info.columns:
+            df_info["Cores"] = df_info["Cores"].apply(clean_number)
+        elif "vCPU" in df_info.columns:
+            df_info["Cores"] = df_info["vCPU"].apply(clean_number)
         elif "CPUs" in df_info.columns:
-            df_info["AllocatedProcessorCoreCount"] = df_info["CPUs"].apply(clean_number)
+            df_info["Cores"] = df_info["CPUs"].apply(clean_number)
         else:
-            df_info["AllocatedProcessorCoreCount"] = 0
+            df_info["Cores"] = 0
 
         df_info["OsName"] = df_info.get(
             "OS according to the configuration file", df_info.get("OS", "Linux")
         )
 
         if "Total storage capacity (MiB)" in df_info.columns:
-            df_info["TotalDiskAllocatedGiB"] = (
-                df_info["Total storage capacity (MiB)"].apply(clean_number) / 1024.0
-            )
-            free_gib = 0.0
+            df_info["TotalDiskAllocatedMiB"] = df_info[
+                "Total storage capacity (MiB)"
+            ].apply(clean_number)
+            free_mib = 0.0
             if "Total free storage (MiB)" in df_info.columns:
-                free_gib = (
-                    df_info["Total free storage (MiB)"].apply(clean_number) / 1024.0
-                )
-            df_info["TotalDiskUsedGiB"] = (
-                df_info["TotalDiskAllocatedGiB"] - free_gib
+                free_mib = df_info["Total free storage (MiB)"].apply(clean_number)
+            df_info["TotalDiskUsedMiB"] = (
+                df_info["TotalDiskAllocatedMiB"] - free_mib
             ).clip(lower=0)
             df_vm = df_info.copy()
         elif not df_disk.empty:
@@ -495,30 +496,31 @@ def _transform_in_memory(
             )
             df_disk["MachineId"] = df_disk["Path_Name"]
             df_disk["CapacityMiB"] = df_disk["Capacity MiB"].apply(clean_number)
-            df_disk["SizeInGib"] = df_disk["CapacityMiB"] / 1024.0
-            disk_sum = df_disk.groupby("MachineId")["SizeInGib"].sum().reset_index()
+            disk_sum = df_disk.groupby("MachineId")["CapacityMiB"].sum().reset_index()
             disk_sum.rename(
-                columns={"SizeInGib": "TotalDiskAllocatedGiB"}, inplace=True
+                columns={"CapacityMiB": "TotalDiskAllocatedMiB"}, inplace=True
             )
             df_vm = pd.merge(df_info, disk_sum, on="MachineId", how="left")
-            df_vm["TotalDiskUsedGiB"] = df_vm["TotalDiskAllocatedGiB"]
+            df_vm["TotalDiskUsedMiB"] = df_vm["TotalDiskAllocatedMiB"]
 
             disk_info["MachineId"] = df_disk["MachineId"]
             disk_info["DiskLabel"] = df_disk.get("Disk", "disk-0")
-            disk_info["SizeInGib"] = df_disk["SizeInGib"]
+            disk_info["SizeInGib"] = df_disk["CapacityMiB"] / 1024.0
             disk_info["UsedInGib"] = 0
             disk_info["StorageTypeLabel"] = df_disk.get("Label", "VMware")
         else:
             df_vm = df_info.copy()
-            df_vm["TotalDiskAllocatedGiB"] = 0
-            df_vm["TotalDiskUsedGiB"] = 0
+            df_vm["TotalDiskAllocatedMiB"] = 0
+            df_vm["TotalDiskUsedMiB"] = 0
 
         vm_info["MachineId"] = df_vm["MachineId"]
         vm_info["MachineName"] = df_vm["MachineName"]
-        vm_info["TotalDiskAllocatedGiB"] = df_vm["TotalDiskAllocatedGiB"]
-        vm_info["TotalDiskUsedGiB"] = df_vm["TotalDiskUsedGiB"]
-        vm_info["AllocatedProcessorCoreCount"] = df_vm["AllocatedProcessorCoreCount"]
-        vm_info["MemoryGiB"] = df_vm["MemoryGiB"]
+        vm_info["Total storage capacity (MiB)"] = df_vm["TotalDiskAllocatedMiB"]
+        vm_info["Total free storage (MiB)"] = (
+            df_vm["TotalDiskAllocatedMiB"] - df_vm["TotalDiskUsedMiB"]
+        ).clip(lower=0)
+        vm_info["Cores"] = df_vm["Cores"]
+        vm_info["Memory (MiB)"] = df_vm["MemoryMiB"]
         vm_info["OsName"] = df_vm["OsName"]
         vm_info["OsType(optional)"] = df_vm["OsName"].apply(map_os_type)
         vm_info["IsPhysical"] = "FALSE"
@@ -530,10 +532,14 @@ def _transform_in_memory(
 
         vm_info["MachineId"] = df_info["MachineId"]
         vm_info["MachineName"] = df_info["MachineName"]
-        vm_info["TotalDiskAllocatedGiB"] = df_info["TotalDiskAllocatedGiB"]
-        vm_info["TotalDiskUsedGiB"] = df_info["TotalDiskUsedGiB"]
-        vm_info["AllocatedProcessorCoreCount"] = df_info["AllocatedProcessorCoreCount"]
-        vm_info["MemoryGiB"] = df_info["MemoryGiB"]
+        vm_info["Total storage capacity (MiB)"] = (
+            df_info["TotalDiskAllocatedGiB"] * 1024.0
+        )
+        vm_info["Total free storage (MiB)"] = (
+            df_info["TotalDiskAllocatedGiB"] - df_info["TotalDiskUsedGiB"]
+        ) * 1024.0
+        vm_info["Cores"] = df_info["AllocatedProcessorCoreCount"]
+        vm_info["Memory (MiB)"] = df_info["MemoryGiB"] * 1024.0
         vm_info["OsName"] = df_info["OsName"]
         vm_info["OsType(optional)"] = df_info["OsName"].apply(map_os_type)
         vm_info["IsPhysical"] = "FALSE"

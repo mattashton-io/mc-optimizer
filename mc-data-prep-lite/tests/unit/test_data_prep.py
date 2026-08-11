@@ -22,7 +22,7 @@ def test_process_inventory_upload_standard_mc_csv() -> None:
     df_single = pd.DataFrame(
         {
             "VM": ["vm-1", "vm-2"],
-            "vCPU": [2, 4],
+            "Cores": [2, 4],
             "Memory (MiB)": [2048, 4096],
         }
     )
@@ -72,14 +72,14 @@ def test_process_inventory_upload_rvtools_format() -> None:
     result = process_inventory_upload(file_dict)
 
     # Check merged and renamed columns are present
-    assert "vCPU" in result.columns
+    assert "Cores" in result.columns
     assert "Memory (MiB)" in result.columns
     assert "Total storage capacity (MiB)" in result.columns
     assert "Total free storage (MiB)" in result.columns
 
     # Verify joined/aggregated values
-    assert result.loc[result["VM"] == "vm-1", "vCPU"].values[0] == 2
-    assert result.loc[result["VM"] == "vm-2", "vCPU"].values[0] == 4
+    assert result.loc[result["VM"] == "vm-1", "Cores"].values[0] == 2
+    assert result.loc[result["VM"] == "vm-2", "Cores"].values[0] == 4
 
     assert result.loc[result["VM"] == "vm-1", "Memory (MiB)"].values[0] == 2048
     assert result.loc[result["VM"] == "vm-2", "Memory (MiB)"].values[0] == 4096
@@ -143,7 +143,7 @@ def test_process_inventory_upload_rvtools_fallback_storage() -> None:
 
 
 def test_process_inventory_upload_failsafe_fallbacks() -> None:
-    """Tests that if sheets fail to join (e.g. mismatched VM names or empty sheets), vCPU and Memory fall back to vInfo values."""
+    """Tests that if sheets fail to join (e.g. mismatched VM names or empty sheets), Cores and Memory fall back to vInfo values."""
     df_vinfo = pd.DataFrame(
         {
             "VM": ["vm-1"],
@@ -165,9 +165,9 @@ def test_process_inventory_upload_failsafe_fallbacks() -> None:
     result = process_inventory_upload(file_dict)
 
     # Cores and Memory should safely fall back to the vInfo values since join was empty/mismatched
-    assert "vCPU" in result.columns
+    assert "Cores" in result.columns
     assert "Memory (MiB)" in result.columns
-    assert result.loc[result["VM"] == "vm-1", "vCPU"].values[0] == 8
+    assert result.loc[result["VM"] == "vm-1", "Cores"].values[0] == 8
     assert result.loc[result["VM"] == "vm-1", "Memory (MiB)"].values[0] == 16384
 
 
