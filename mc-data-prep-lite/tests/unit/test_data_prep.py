@@ -14,7 +14,7 @@
 
 import pandas as pd
 
-from app.data_prep import process_inventory_upload
+from app.data_prep import _transform_in_memory, process_inventory_upload
 
 
 def test_process_inventory_upload_standard_mc_csv() -> None:
@@ -153,6 +153,71 @@ def test_process_inventory_upload_failsafe_fallbacks() -> None:
     assert "Size MiB" in result.columns
     assert result.loc[result["VM"] == "vm-1", "CPUs"].values[0] == 8
     assert result.loc[result["VM"] == "vm-1", "Size MiB"].values[0] == 16384
+
+
+def test_transform_in_memory_vmware() -> None:
+    """Tests that _transform_in_memory outputs exactly the official Google Cloud Migration Center manual CSV import headers and units."""
+    df_info = pd.DataFrame(
+        {
+            "VM": ["vm-1"],
+            "VM UUID": ["vm-uuid-1"],
+            "Primary IP Address": ["10.0.0.1"],
+            "Powerstate": ["poweredOn"],
+            "OS according to the VMware Tools": ["Ubuntu Linux (64-bit)"],
+            "CPUs": [2.0],
+            "Size MiB": [2048.0],
+            "Capacity MiB": [30000.0],
+            "Consumed MiB": [24000.0],
+        }
+    )
+
+    transformed = _transform_in_memory(df_info, pd.DataFrame(), "vmware")
+    df_vms = transformed["vms"]
+
+    # Verify correct official headers are present
+    assert "MachineId" in df_vms.columns
+    assert "MachineName" in df_vms.columns
+    assert "PrimaryIPAddress(optional)" in df_vms.columns
+    assert "TotalDiskAllocatedGiB" in df_vms.columns
+    assert "TotalDiskUsedGiB" in df_vms.columns
+    assert "AllocatedProcessorCoreCount" in df_vms.columns
+    assert "MemoryGiB" in df_vms.columns
+    assert "OsName" in df_vms.columns
+    assert "OsType(optional)" in df_vms.columns
+    assert "MachineStatus(optional)" in df_vms.columns
+
+    # Verify unit conversions (MiB to GiB) and mappings
+    assert (
+        df_vms.loc[df_vms["MachineName"] == "vm-1", "MachineId"].values[0]
+        == "vm-uuid-1"
+    )
+    assert (
+        df_vms.loc[
+            df_vms["MachineName"] == "vm-1", "PrimaryIPAddress(optional)"
+        ].values[0]
+        == "10.0.0.1"
+    )
+    assert (
+        df_vms.loc[
+            df_vms["MachineName"] == "vm-1", "AllocatedProcessorCoreCount"
+        ].values[0]
+        == 2.0
+    )
+    assert (
+        df_vms.loc[df_vms["MachineName"] == "vm-1", "MemoryGiB"].values[0] == 2.0
+    )  # 2048 / 1024
+    assert (
+        df_vms.loc[df_vms["MachineName"] == "vm-1", "TotalDiskAllocatedGiB"].values[0]
+        == 30000.0 / 1024.0
+    )
+    assert (
+        df_vms.loc[df_vms["MachineName"] == "vm-1", "TotalDiskUsedGiB"].values[0]
+        == 24000.0 / 1024.0
+    )
+    assert (
+        df_vms.loc[df_vms["MachineName"] == "vm-1", "MachineStatus(optional)"].values[0]
+        == "running"
+    )
 
 
 def test_process_inventory_upload_fallback() -> None:

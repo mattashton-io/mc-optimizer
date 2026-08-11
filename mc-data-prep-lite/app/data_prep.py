@@ -412,43 +412,81 @@ def _transform_in_memory(
         disk_info = df_disk.copy()
 
     elif source_type == "vmware":
-        df_info["MachineName"] = (
-            df_info["Path"].apply(extract_vm_name)
-            if "Path" in df_info.columns
-            else df_info["VM"]
-        )
-        df_info["MachineId"] = df_info["MachineName"]
+        # Extract MachineId
+        if "VM UUID" in df_info.columns:
+            df_info["MachineId"] = df_info["VM UUID"].astype(str).str.strip()
+        elif "VI SDK UUID" in df_info.columns:
+            df_info["MachineId"] = df_info["VI SDK UUID"].astype(str).str.strip()
+        else:
+            df_info["MachineId"] = df_info["VM"].astype(str).str.strip()
 
-        if "Memory (MiB)" in df_info.columns:
-            df_info["MemoryMiB"] = df_info["Memory (MiB)"].apply(clean_number)
+        # MachineName
+        df_info["MachineName"] = df_info["VM"].astype(str).str.strip()
+
+        # PrimaryIPAddress
+        df_info["PrimaryIPAddress(optional)"] = (
+            df_info["Primary IP Address"]
+            if "Primary IP Address" in df_info.columns
+            else (
+                df_info["PrimaryIPAddress(optional)"]
+                if "PrimaryIPAddress(optional)" in df_info.columns
+                else ""
+            )
+        )
+
+        # OsName
+        df_info["OsName"] = (
+            df_info["OS according to the VMware Tools"]
+            if "OS according to the VMware Tools" in df_info.columns
+            else (
+                df_info["OS according to the configuration file"]
+                if "OS according to the configuration file" in df_info.columns
+                else df_info.get("OsName", "Linux")
+            )
+        )
+
+        # MachineStatus
+        def map_machine_status(power_state):
+            if pd.isna(power_state):
+                return "user stopped"
+            state = str(power_state).strip().lower()
+            if state == "poweredon":
+                return "running"
+            if state == "poweredoff":
+                return "user stopped"
+            return "user stopped"
+
+        df_info["MachineStatus(optional)"] = (
+            df_info["Powerstate"].apply(map_machine_status)
+            if "Powerstate" in df_info.columns
+            else "running"
+        )
+
+        # MemoryGiB
+        if "Size MiB" in df_info.columns:
+            df_info["MemoryGiB"] = df_info["Size MiB"].apply(clean_number) / 1024.0
         elif "Memory" in df_info.columns:
-            df_info["MemoryMiB"] = df_info["Memory"].apply(clean_number)
+            df_info["MemoryGiB"] = df_info["Memory"].apply(clean_number) / 1024.0
         else:
-            df_info["MemoryMiB"] = 0
+            df_info["MemoryGiB"] = 0.0
 
-        if "Cores" in df_info.columns:
-            df_info["Cores"] = df_info["Cores"].apply(clean_number)
-        elif "vCPU" in df_info.columns:
-            df_info["Cores"] = df_info["vCPU"].apply(clean_number)
-        elif "CPUs" in df_info.columns:
-            df_info["Cores"] = df_info["CPUs"].apply(clean_number)
+        # AllocatedProcessorCoreCount
+        if "CPUs" in df_info.columns:
+            df_info["AllocatedProcessorCoreCount"] = df_info["CPUs"].apply(clean_number)
         else:
-            df_info["Cores"] = 0
+            df_info["AllocatedProcessorCoreCount"] = 0
 
-        df_info["OsName"] = df_info.get(
-            "OS according to the configuration file", df_info.get("OS", "Linux")
-        )
-
-        if "Total storage capacity (MiB)" in df_info.columns:
-            df_info["TotalDiskAllocatedMiB"] = df_info[
-                "Total storage capacity (MiB)"
-            ].apply(clean_number)
-            free_mib = 0.0
-            if "Total free storage (MiB)" in df_info.columns:
-                free_mib = df_info["Total free storage (MiB)"].apply(clean_number)
-            df_info["TotalDiskUsedMiB"] = (
-                df_info["TotalDiskAllocatedMiB"] - free_mib
-            ).clip(lower=0)
+        # TotalDiskAllocatedGiB and TotalDiskUsedGiB
+        if "Capacity MiB" in df_info.columns:
+            df_info["TotalDiskAllocatedGiB"] = (
+                df_info["Capacity MiB"].apply(clean_number) / 1024.0
+            )
+            if "Consumed MiB" in df_info.columns:
+                df_info["TotalDiskUsedGiB"] = (
+                    df_info["Consumed MiB"].apply(clean_number) / 1024.0
+                )
+            else:
+                df_info["TotalDiskUsedGiB"] = df_info["TotalDiskAllocatedGiB"]
             df_vm = df_info.copy()
         elif not df_disk.empty:
             df_disk["Path_Name"] = (
@@ -459,11 +497,10 @@ def _transform_in_memory(
             df_disk["MachineId"] = df_disk["Path_Name"]
             df_disk["CapacityMiB"] = df_disk["Capacity MiB"].apply(clean_number)
             disk_sum = df_disk.groupby("MachineId")["CapacityMiB"].sum().reset_index()
-            disk_sum.rename(
-                columns={"CapacityMiB": "TotalDiskAllocatedMiB"}, inplace=True
-            )
+            disk_sum.rename(columns={"CapacityMiB": "CapacityMiB_Sum"}, inplace=True)
             df_vm = pd.merge(df_info, disk_sum, on="MachineId", how="left")
-            df_vm["TotalDiskUsedMiB"] = df_vm["TotalDiskAllocatedMiB"]
+            df_vm["TotalDiskAllocatedGiB"] = df_vm["CapacityMiB_Sum"].fillna(0) / 1024.0
+            df_vm["TotalDiskUsedGiB"] = df_vm["TotalDiskAllocatedGiB"]
 
             disk_info["MachineId"] = df_disk["MachineId"]
             disk_info["DiskLabel"] = df_disk.get("Disk", "disk-0")
@@ -472,19 +509,19 @@ def _transform_in_memory(
             disk_info["StorageTypeLabel"] = df_disk.get("Label", "VMware")
         else:
             df_vm = df_info.copy()
-            df_vm["TotalDiskAllocatedMiB"] = 0
-            df_vm["TotalDiskUsedMiB"] = 0
+            df_vm["TotalDiskAllocatedGiB"] = 0.0
+            df_vm["TotalDiskUsedGiB"] = 0.0
 
         vm_info["MachineId"] = df_vm["MachineId"]
         vm_info["MachineName"] = df_vm["MachineName"]
-        vm_info["Total storage capacity (MiB)"] = df_vm["TotalDiskAllocatedMiB"]
-        vm_info["Total free storage (MiB)"] = (
-            df_vm["TotalDiskAllocatedMiB"] - df_vm["TotalDiskUsedMiB"]
-        ).clip(lower=0)
-        vm_info["Cores"] = df_vm["Cores"]
-        vm_info["Memory (MiB)"] = df_vm["MemoryMiB"]
+        vm_info["PrimaryIPAddress(optional)"] = df_vm["PrimaryIPAddress(optional)"]
+        vm_info["TotalDiskAllocatedGiB"] = df_vm["TotalDiskAllocatedGiB"]
+        vm_info["TotalDiskUsedGiB"] = df_vm["TotalDiskUsedGiB"]
+        vm_info["AllocatedProcessorCoreCount"] = df_vm["AllocatedProcessorCoreCount"]
+        vm_info["MemoryGiB"] = df_vm["MemoryGiB"]
         vm_info["OsName"] = df_vm["OsName"]
         vm_info["OsType(optional)"] = df_vm["OsName"].apply(map_os_type)
+        vm_info["MachineStatus(optional)"] = df_vm["MachineStatus(optional)"]
         vm_info["IsPhysical"] = "FALSE"
         vm_info["MachineTypeLabel(optional)"] = "VMware VM"
 
@@ -494,16 +531,14 @@ def _transform_in_memory(
 
         vm_info["MachineId"] = df_info["MachineId"]
         vm_info["MachineName"] = df_info["MachineName"]
-        vm_info["Total storage capacity (MiB)"] = (
-            df_info["TotalDiskAllocatedGiB"] * 1024.0
-        )
-        vm_info["Total free storage (MiB)"] = (
-            df_info["TotalDiskAllocatedGiB"] - df_info["TotalDiskUsedGiB"]
-        ) * 1024.0
-        vm_info["Cores"] = df_info["AllocatedProcessorCoreCount"]
-        vm_info["Memory (MiB)"] = df_info["MemoryGiB"] * 1024.0
+        vm_info["PrimaryIPAddress(optional)"] = ""
+        vm_info["TotalDiskAllocatedGiB"] = df_info["TotalDiskAllocatedGiB"]
+        vm_info["TotalDiskUsedGiB"] = df_info["TotalDiskUsedGiB"]
+        vm_info["AllocatedProcessorCoreCount"] = df_info["AllocatedProcessorCoreCount"]
+        vm_info["MemoryGiB"] = df_info["MemoryGiB"]
         vm_info["OsName"] = df_info["OsName"]
         vm_info["OsType(optional)"] = df_info["OsName"].apply(map_os_type)
+        vm_info["MachineStatus(optional)"] = "running"
         vm_info["IsPhysical"] = "FALSE"
         vm_info["MachineTypeLabel(optional)"] = "Hyper-V VM"
 
