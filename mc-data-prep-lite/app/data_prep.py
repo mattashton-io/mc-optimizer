@@ -138,6 +138,18 @@ async def process_uploaded_infrastructure_file(
         if not file_bytes:
             return f"Error: Could not retrieve data for artifact '{artifact_id}'."
 
+        # Check for raw RVTools .xlsx file pass-through
+        if artifact_id.lower().endswith(".xlsx"):
+            print(
+                "Notice: Detected a raw RVTools (.xlsx) file. Google Cloud Migration Center natively supports this format. Bypassing CSV conversion and uploading directly..."
+            )
+            # Save the raw bytes directly as 'rvtools.xlsx' artifact for direct upload
+            await tool_context.save_artifact("rvtools.xlsx", part)
+            return (
+                "Notice: Detected a raw RVTools (.xlsx) file. Google Cloud Migration Center natively supports this format. "
+                "Bypassing CSV conversion and uploading directly... Staged raw 'rvtools.xlsx' artifact successfully."
+            )
+
         # Detect structure
         is_generic_template = False
         is_tag_info = False

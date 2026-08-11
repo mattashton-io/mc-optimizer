@@ -71,7 +71,19 @@ async def import_data_to_migration_center(tool_context: ToolContext) -> str:
     except Exception as e:
         return f"Error: Failed to create import job: {e}"
 
-    files = ["vmInfo.csv", "diskInfo.csv", "tagInfo.csv"]
+    has_xlsx = False
+    try:
+        xlsx_part = await tool_context.load_artifact("rvtools.xlsx")
+        if xlsx_part:
+            has_xlsx = True
+    except Exception:
+        pass
+
+    if has_xlsx:
+        files = ["rvtools.xlsx"]
+    else:
+        files = ["vmInfo.csv", "diskInfo.csv", "tagInfo.csv"]
+
     uploaded_files = []
     failed_files = []
 
@@ -100,15 +112,20 @@ async def import_data_to_migration_center(tool_context: ToolContext) -> str:
                 print(
                     f"File {file_name} not found or error loading from artifacts: {e}"
                 )
-                if file_name == "vmInfo.csv":
+                if file_name == "vmInfo.csv" or file_name == "rvtools.xlsx":
                     failed_files.append(file_name)
                 continue
 
-            import_data_file = {"format": "IMPORT_JOB_FORMAT_STRATOZONE_CSV"}
+            if file_name == "rvtools.xlsx":
+                import_data_file = {"format": "IMPORT_JOB_FORMAT_RVTOOLS_XLSX"}
+                import_data_file_id = "rvtools-xlsx"
+            else:
+                import_data_file = {"format": "IMPORT_JOB_FORMAT_STRATOZONE_CSV"}
+                import_data_file_id = file_name.split(".")[0].lower()
 
             req = migrationcenter_v1.CreateImportDataFileRequest(
                 parent=job_name,
-                import_data_file_id=file_name.split(".")[0].lower(),
+                import_data_file_id=import_data_file_id,
                 import_data_file=import_data_file,
             )
 
