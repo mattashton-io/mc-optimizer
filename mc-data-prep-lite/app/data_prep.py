@@ -7,6 +7,28 @@ from google.adk.tools import ToolContext
 from google.genai import types
 
 
+def filter_powered_on_vms(df: pd.DataFrame) -> pd.DataFrame:
+    """Filters the DataFrame to only keep poweredOn VMs if any power state column is present."""
+    if df.empty:
+        return df
+
+    power_cols = []
+    for col in df.columns:
+        norm = str(col).lower().replace(" ", "").replace("_", "").replace("-", "")
+        if norm == "powerstate":
+            power_cols.append(col)
+
+    for col in power_cols:
+        def is_powered_on(val):
+            if pd.isna(val):
+                return False
+            val_str = str(val).strip().lower()
+            return val_str == "poweredon"
+        df = df[df[col].apply(is_powered_on)]
+
+    return df
+
+
 def process_inventory_upload(file_dict: dict[str, pd.DataFrame]) -> pd.DataFrame:
     # Standardize column headers by stripping whitespace
     for sheet in file_dict:
@@ -27,6 +49,8 @@ def process_inventory_upload(file_dict: dict[str, pd.DataFrame]) -> pd.DataFrame
 
     if is_rvtools:
         df_vinfo = file_dict["vInfo"].copy()
+        df_vinfo = filter_powered_on_vms(df_vinfo)
+
         df_vmem = file_dict["vMemory"].copy()
         df_vpart = file_dict["vPartition"].copy()
 
@@ -138,10 +162,17 @@ async def process_uploaded_infrastructure_file(
         if not file_bytes:
             return f"Error: Could not retrieve data for artifact '{artifact_id}'."
 
-        # Check for raw RVTools .xlsx file pass-through
-        if artifact_id.lower().endswith(".xlsx"):
+        # Robust Excel file detection using file extension and magic bytes
+        is_excel = (
+            artifact_id.lower().endswith((".xlsx", ".xls")) or
+            file_bytes.startswith(b"PK\x03\x04") or
+            file_bytes.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
+        )
+
+        # Check for raw RVTools Excel file pass-through
+        if is_excel:
             print(
-                "Notice: Detected a raw RVTools (.xlsx) file. Google Cloud Migration Center natively supports this format. Staging raw 'rvtools.xlsx' artifact for direct upload..."
+                "Notice: Detected a raw RVTools Excel file. Google Cloud Migration Center natively supports this format. Staging raw 'rvtools.xlsx' artifact for direct upload..."
             )
             # Save the raw bytes directly as 'rvtools.xlsx' artifact for direct upload
             await tool_context.save_artifact("rvtools.xlsx", part)
@@ -195,7 +226,7 @@ async def process_uploaded_infrastructure_file(
 
         # Load sheets or CSV
         file_dict = {}
-        if artifact_id.lower().endswith(".xlsx"):
+        if is_excel:
             with io.BytesIO(file_bytes) as f:
                 try:
                     file_dict = pd.read_excel(f, sheet_name=None)
@@ -273,6 +304,9 @@ async def process_uploaded_infrastructure_file(
                 df_info = next(iter(file_dict.values()))
                 df_disk = pd.DataFrame()
 
+        # Apply power state filtering for all formats
+        df_info = filter_powered_on_vms(df_info)
+
         if df_info.empty:
             return (
                 "Error: The uploaded file appears to be empty or could not be parsed."
@@ -303,8 +337,8 @@ async def process_uploaded_infrastructure_file(
             f"Successfully processed {len(transformed['vms'])} VMs from {format_type}. "
             f"Transformed files (vmInfo.csv) have been saved as session artifacts. "
         )
-        if artifact_id.lower().endswith(".xlsx"):
-            success_msg += "Notice: Detected a raw RVTools (.xlsx) file. Staged raw 'rvtools.xlsx' artifact successfully for native Google Cloud Migration Center import. "
+        if is_excel:
+            success_msg += "Notice: Detected a raw RVTools Excel file. Staged raw 'rvtools.xlsx' artifact successfully for native Google Cloud Migration Center import. "
         success_msg += "You can now run 'get_parsed_vms' to review or 'import_data_to_migration_center' to proceed."
 
         return success_msg

@@ -282,3 +282,159 @@ async def test_process_uploaded_infrastructure_file_xlsx_passthrough() -> None:
     assert "rvtools.xlsx" in saved_artifacts
     assert "vmInfo.csv" in saved_artifacts
     assert "staged_labels.csv" in saved_artifacts
+
+
+def test_filter_powered_on_vms_all_formats() -> None:
+    """Tests that only poweredOn VMs are kept when Powerstate columns are present."""
+    from app.data_prep import filter_powered_on_vms
+
+    # 1. Exact match with Powerstate (case-insensitive values)
+    df_with_power = pd.DataFrame({
+        "VM": ["vm-on", "vm-off", "vm-suspended"],
+        "Powerstate": ["poweredOn", "poweredOff", "suspended"],
+    })
+    filtered = filter_powered_on_vms(df_with_power)
+    assert len(filtered) == 1
+    assert filtered.iloc[0]["VM"] == "vm-on"
+
+    # 2. Match with "Power State" (or other spacing / casing)
+    df_power_space = pd.DataFrame({
+        "VM": ["vm-on", "vm-off"],
+        "Power State": ["poweredOn", "poweredOff"],
+    })
+    filtered_space = filter_powered_on_vms(df_power_space)
+    assert len(filtered_space) == 1
+    assert filtered_space.iloc[0]["VM"] == "vm-on"
+
+    # 3. Match with "power_state"
+    df_power_underscore = pd.DataFrame({
+        "VM": ["vm-on", "vm-off"],
+        "power_state": ["poweredOn", "poweredOff"],
+    })
+    filtered_underscore = filter_powered_on_vms(df_power_underscore)
+    assert len(filtered_underscore) == 1
+    assert filtered_underscore.iloc[0]["VM"] == "vm-on"
+
+    # 4. No power column: should do nothing (no filtering)
+    df_no_power = pd.DataFrame({
+        "VM": ["vm-1", "vm-2"],
+        "OtherCol": ["val1", "val2"],
+    })
+    filtered_no_power = filter_powered_on_vms(df_no_power)
+    assert len(filtered_no_power) == 2
+
+
+@pytest.mark.asyncio
+async def test_process_uploaded_infrastructure_file_filters_powered_off() -> None:
+    """Tests that process_uploaded_infrastructure_file filters out poweredOff VMs."""
+    df_vinfo = pd.DataFrame({
+        "VM": ["powered-on-vm", "powered-off-vm"],
+        "VM UUID": ["uuid-on", "uuid-off"],
+        "Powerstate": ["poweredOn", "poweredOff"],
+        "CPUs": [2, 4],
+        "Memory": [2048, 4096],
+    })
+    df_vcpu = pd.DataFrame({"VM": ["powered-on-vm", "powered-off-vm"], "CPUs": [2, 4]})
+    df_vmem = pd.DataFrame({"VM": ["powered-on-vm", "powered-off-vm"], "Size MiB": [2048, 4096]})
+    df_vpart = pd.DataFrame(columns=["VM", "Capacity MiB", "Consumed MiB"])
+
+    mock_sheets = {
+        "vInfo": df_vinfo,
+        "vCPU": df_vcpu,
+        "vMemory": df_vmem,
+        "vPartition": df_vpart,
+    }
+
+    mock_part = MagicMock()
+    mock_part.inline_data = MagicMock()
+    mock_part.inline_data.data = b"dummy_xlsx_content"
+    mock_part.text = None
+
+    mock_tool_context = MagicMock()
+    mock_tool_context.load_artifact = AsyncMock(return_value=mock_part)
+    mock_tool_context.save_artifact = AsyncMock()
+
+    from app.data_prep import process_uploaded_infrastructure_file
+
+    with patch("pandas.read_excel", return_value=mock_sheets):
+        result = await process_uploaded_infrastructure_file(
+            artifact_id="rvtools_export.xlsx",
+            format_type="vmware",
+            tool_context=mock_tool_context
+        )
+
+    # Success message should report only 1 VM (since 1 was filtered out as poweredOff)
+    assert "Successfully processed 1 VMs" in result
+
+    # Verify vmInfo.csv that is saved contains only the powered-on-vm
+    save_calls = mock_tool_context.save_artifact.call_args_list
+    vm_info_call = None
+    for call in save_calls:
+        if call[0][0] == "vmInfo.csv":
+            vm_info_call = call
+            break
+
+    assert vm_info_call is not None
+    saved_csv_content = vm_info_call[0][1].text
+    assert "powered-on-vm" in saved_csv_content
+    assert "powered-off-vm" not in saved_csv_content
+
+
+@pytest.mark.asyncio
+async def test_process_uploaded_infrastructure_file_excel_by_magic_bytes() -> None:
+    """Tests that process_uploaded_infrastructure_file correctly detects and processes Excel files based on zip magic bytes PK\\x03\\x04 even if filename ends with trailing slash or has no extension."""
+    df_vinfo = pd.DataFrame({
+        "VM": ["powered-on-vm"],
+        "VM UUID": ["uuid-on"],
+        "Powerstate": ["poweredOn"],
+        "CPUs": [2],
+        "Memory": [2048],
+    })
+    df_vcpu = pd.DataFrame({"VM": ["powered-on-vm"], "CPUs": [2]})
+    df_vmem = pd.DataFrame({"VM": ["powered-on-vm"], "Size MiB": [2048]})
+    df_vpart = pd.DataFrame(columns=["VM", "Capacity MiB", "Consumed MiB"])
+
+    mock_sheets = {
+        "vInfo": df_vinfo,
+        "vCPU": df_vcpu,
+        "vMemory": df_vmem,
+        "vPartition": df_vpart,
+    }
+
+    mock_part = MagicMock()
+    mock_part.inline_data = MagicMock()
+    # PK\x03\x04 followed by dummy bytes
+    mock_part.inline_data.data = b"PK\x03\x04dummy_xlsx_content_that_starts_with_zip_signature"
+    mock_part.text = None
+
+    mock_tool_context = MagicMock()
+    mock_tool_context.load_artifact = AsyncMock(return_value=mock_part)
+    mock_tool_context.save_artifact = AsyncMock()
+
+    from app.data_prep import process_uploaded_infrastructure_file
+
+    # artifact_id is a path ending with trailing slash or no extension (just like the user's error case)
+    with patch("pandas.read_excel", return_value=mock_sheets):
+        result = await process_uploaded_infrastructure_file(
+            artifact_id="/usr/local/google/home/mattashton/Documents/SA/SLED/FL-SWFWMD/",
+            format_type="vmware",
+            tool_context=mock_tool_context
+        )
+
+    # Success message should confirm it detected and processed it as Excel correctly
+    assert "Successfully processed 1 VMs" in result
+    assert "Notice: Detected a raw RVTools Excel file" in result
+
+    # Verify vmInfo.csv that is saved contains the powered-on-vm
+    save_calls = mock_tool_context.save_artifact.call_args_list
+    vm_info_call = None
+    for call in save_calls:
+        if call[0][0] == "vmInfo.csv":
+            vm_info_call = call
+            break
+
+    assert vm_info_call is not None
+    saved_csv_content = vm_info_call[0][1].text
+    assert "powered-on-vm" in saved_csv_content
+
+

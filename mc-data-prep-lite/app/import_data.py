@@ -36,7 +36,7 @@ async def import_data_to_migration_center(tool_context: ToolContext) -> str:
     except Exception as e:
         return f"Error initializing Migration Center client: {e}"
 
-    job_id = f"manual-import-{int(time.time())}"
+    job_id = f"agent-upload-{int(time.time())}"
     parent = f"projects/{project_id}/locations/{location}"
 
     print(f"Creating asset source in {parent}...")
@@ -53,7 +53,7 @@ async def import_data_to_migration_center(tool_context: ToolContext) -> str:
         return f"Error: Failed to create asset source in project '{project_id}' at '{location}': {e}."
 
     import_job = {
-        "display_name": f"Manual Import {time.strftime('%Y%m%d-%H%M%S')}",
+        "display_name": f"agent-upload-{time.strftime('%Y%m%d-%H%M%S')}",
         "asset_source": source.name,
     }
     request = migrationcenter_v1.CreateImportJobRequest(
