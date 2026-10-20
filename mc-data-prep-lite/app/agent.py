@@ -106,7 +106,7 @@ class ResilientGemini(Gemini):
 root_agent = Agent(
     name="root_agent",
     model=ResilientGemini(
-        model="gemini-flash-latest",
+        model="gemini-2.5-flash",
         retry_options=types.HttpRetryOptions(attempts=3),
     ),
     instruction="""You are a GCP Migration Data Prep Agent. 
