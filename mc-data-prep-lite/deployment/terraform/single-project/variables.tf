@@ -26,7 +26,19 @@ variable "project_id" {
 variable "region" {
   type        = string
   description = "Google Cloud region for resource deployment."
-  default     = "us-east1"
+  default     = "us-central1"
+}
+
+variable "migration_center_group_id" {
+  type        = string
+  description = "Target Migration Center group ID for server assignment."
+  default     = "all-servers"
+}
+
+variable "preference_set_ids" {
+  type        = string
+  description = "Comma-separated list of pre-configured preference set IDs for Migration Center."
+  default     = "1yr-CUD-rightsized,3yr-CUD-rightsized,1yr-CUD-like-for-like,3yr-CUD-like-for-like"
 }
 
 variable "telemetry_logs_filter" {
@@ -45,11 +57,14 @@ variable "app_sa_roles" {
   description = "List of roles to assign to the application service account"
   type        = list(string)
   default = [
-
     "roles/aiplatform.user",
+    "roles/migrationcenter.admin",
+    "roles/secretmanager.secretAccessor",
+    "roles/storage.admin",
+    "roles/bigquery.dataEditor",
+    "roles/bigquery.jobUser",
     "roles/logging.logWriter",
     "roles/cloudtrace.agent",
-    "roles/storage.admin",
     "roles/serviceusage.serviceUsageConsumer",
   ]
 }

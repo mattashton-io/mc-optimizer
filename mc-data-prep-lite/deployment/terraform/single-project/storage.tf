@@ -12,14 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-provider "google" {
-  project               = var.project_id
-  region                = var.region
-  user_project_override = true
-}
-
+# Storage bucket for telemetry logs
 resource "google_storage_bucket" "logs_data_bucket" {
   name                        = "${var.project_id}-${var.project_name}-logs"
+  location                    = var.region
+  project                     = var.project_id
+  uniform_bucket_level_access = true
+
+  depends_on = [resource.google_project_service.services]
+}
+
+# Storage bucket for infrastructure export spreadsheets and staged data
+resource "google_storage_bucket" "data_bucket" {
+  name                        = "${var.project_id}-${var.project_name}-data"
   location                    = var.region
   project                     = var.project_id
   uniform_bucket_level_access = true

@@ -15,9 +15,14 @@
 locals {
   services = [
     "aiplatform.googleapis.com",
+    "migrationcenter.googleapis.com",
+    "secretmanager.googleapis.com",
     "cloudbuild.googleapis.com",
     "run.googleapis.com",
+    "storage.googleapis.com",
     "bigquery.googleapis.com",
+    "bigquerystorage.googleapis.com",
+    "bigqueryconnection.googleapis.com",
     "cloudresourcemanager.googleapis.com",
     "iam.googleapis.com",
     "serviceusage.googleapis.com",
@@ -35,7 +40,8 @@ resource "google_project_service" "services" {
 }
 
 resource "google_project_service_identity" "vertex_sa" {
-  provider = google-beta
-  project = var.project_id
-  service = "aiplatform.googleapis.com"
+  provider   = google-beta
+  project    = var.project_id
+  service    = "aiplatform.googleapis.com"
+  depends_on = [google_project_service.services]
 }

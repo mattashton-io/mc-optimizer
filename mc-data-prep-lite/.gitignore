@@ -206,3 +206,7 @@ tools/a2a-inspector/
 agy-temp
 agy-temp/
 agy-temp/*
+
+# terraform
+env.tfvars
+*env.tfvars

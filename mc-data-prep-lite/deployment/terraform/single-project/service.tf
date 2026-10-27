@@ -45,6 +45,11 @@ resource "google_vertex_ai_reasoning_engine" "app" {
       }
 
       env {
+        name  = "DATA_BUCKET_NAME"
+        value = google_storage_bucket.data_bucket.name
+      }
+
+      env {
         name  = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
         value = "true"
       }
@@ -52,6 +57,41 @@ resource "google_vertex_ai_reasoning_engine" "app" {
       env {
         name  = "GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY"
         value = "true"
+      }
+
+      env {
+        name  = "GCP_PROJECT_ID"
+        value = var.project_id
+      }
+
+      env {
+        name  = "GOOGLE_CLOUD_PROJECT"
+        value = var.project_id
+      }
+
+      env {
+        name  = "GCP_LOCATION"
+        value = var.region
+      }
+
+      env {
+        name  = "GOOGLE_CLOUD_LOCATION"
+        value = "global"
+      }
+
+      env {
+        name  = "GOOGLE_GENAI_USE_VERTEXAI"
+        value = "True"
+      }
+
+      env {
+        name  = "MIGRATION_CENTER_GROUP_ID"
+        value = var.migration_center_group_id
+      }
+
+      env {
+        name  = "PREFERENCE_SET_IDS"
+        value = var.preference_set_ids
       }
     }
 

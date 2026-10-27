@@ -21,3 +21,13 @@ output "logs_bucket_name" {
   description = "Logs storage bucket name"
   value       = google_storage_bucket.logs_data_bucket.name
 }
+
+output "data_bucket_name" {
+  description = "Data and artifacts storage bucket name"
+  value       = google_storage_bucket.data_bucket.name
+}
+
+output "migration_center_group_id" {
+  description = "Configured Migration Center group ID"
+  value       = var.migration_center_group_id
+}
