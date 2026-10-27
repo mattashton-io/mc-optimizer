@@ -438,3 +438,115 @@ async def test_process_uploaded_infrastructure_file_excel_by_magic_bytes() -> No
     assert "powered-on-vm" in saved_csv_content
 
 
+def test_validate_and_prepare_disk_info_standards() -> None:
+    """Tests diskInfo validation against Migration Center manual CSV rules."""
+    from app.data_prep import validate_and_prepare_disk_info
+
+    # 1. Valid diskInfo with casing normalization (SizeInGiB -> SizeInGib) and 0-size disk warning
+    df_raw = pd.DataFrame({
+        "MachineID": ["VM-00001 ", "VM-02202"],
+        "UsedInGiB": [48.29, 0.0],
+        "SizeInGiB": [64.0, 0.0],
+        "DiskLabel": ["DISK-01", "DISK-02"],
+        "StorageTypeLabel": ["DynamicallyExpanding", "FixedSize"],
+    })
+    cleaned, errors, warnings = validate_and_prepare_disk_info(df_raw)
+    assert errors == []
+    assert list(cleaned.columns) == [
+        "MachineId",
+        "DiskLabel",
+        "SizeInGib",
+        "UsedInGib",
+        "StorageTypeLabel",
+    ]
+    assert cleaned.iloc[0]["MachineId"] == "VM-00001"
+    assert any("Normalized column header casing" in w for w in warnings)
+    assert any("Trimmed leading/trailing whitespace" in w for w in warnings)
+    assert any("SizeInGib == 0" in w for w in warnings)
+
+    # 2. Invalid rows: UsedInGib > SizeInGib, negative SizeInGib, invalid MachineId chars
+    df_bad = pd.DataFrame({
+        "MachineId": ["VM-00001", "VM-00002", "bad id!"],
+        "DiskLabel": ["DISK-01", "DISK-02", "DISK-03"],
+        "SizeInGib": [50.0, -10.0, 100.0],
+        "UsedInGib": [60.0, 0.0, 20.0],
+        "StorageTypeLabel": ["FixedSize", "FixedSize", "FixedSize"],
+    })
+    _, bad_errors, _ = validate_and_prepare_disk_info(df_bad)
+    assert any("exceeds 'SizeInGib'" in e for e in bad_errors)
+    assert any("negative value(s)" in e for e in bad_errors)
+    assert any("invalid characters" in e for e in bad_errors)
+
+
+@pytest.mark.asyncio
+async def test_process_uploaded_infrastructure_file_disk_info_hyperv() -> None:
+    """Tests that uploading diskInfo_redacted.csv with format_type='hyperv' stages diskInfo.csv without clobbering vmInfo.csv."""
+    from app.data_prep import process_uploaded_infrastructure_file
+
+    disk_csv = (
+        "MachineId,DiskLabel,SizeInGib,UsedInGib,StorageTypeLabel\n"
+        "VM-00001,DISK-01,64,48.29,DynamicallyExpanding\n"
+        "VM-00002,DISK-01,100,48.82,DynamicallyExpanding\n"
+        "VM-02202,DISK-02,0,0,DynamicallyExpanding\n"
+    )
+    vm_csv = (
+        "MachineId,MachineName,TotalDiskAllocatedGiB,TotalDiskUsedGiB,AllocatedProcessorCoreCount,MemoryGiB,OsName,IsPhysical\n"
+        "VM-00001,SERVER-00001,64,48.29,4,8,Windows 11,0\n"
+        "VM-00002,SERVER-00002,100,48.82,16,20,Windows Server 2022,0\n"
+        "VM-02202,SERVER-02202,0,0,4,8,Windows Server 2019,0\n"
+        "VM-00521,SERVER-00521,0,0,4,8,Windows Server 2019,0\n"
+    )
+
+    disk_part = MagicMock()
+    disk_part.inline_data = MagicMock()
+    disk_part.inline_data.data = disk_csv.encode("utf-8")
+    disk_part.text = None
+
+    vm_part = MagicMock()
+    vm_part.text = vm_csv
+    vm_part.inline_data = None
+
+    async def load_side_effect(artifact_name: str):
+        if artifact_name == "diskInfo_redacted.csv":
+            return disk_part
+        if artifact_name == "vmInfo.csv":
+            return vm_part
+        return None
+
+    mock_tool_context = MagicMock()
+    mock_tool_context.load_artifact = AsyncMock(side_effect=load_side_effect)
+    mock_tool_context.save_artifact = AsyncMock()
+
+    result = await process_uploaded_infrastructure_file(
+        artifact_id="diskInfo_redacted.csv",
+        format_type="hyperv",
+        tool_context=mock_tool_context,
+    )
+
+    assert "Successfully validated and staged 3 disk entries across 3 VMs in diskInfo.csv" in result
+    assert "SizeInGib == 0" in result
+    assert "1 VM(s) in staged vmInfo.csv have no disk rows in diskInfo.csv" in result
+
+    saved_names = [call[0][0] for call in mock_tool_context.save_artifact.call_args_list]
+    assert saved_names == ["diskInfo.csv"]
+
+
+def test_transform_in_memory_generic_normalizes_scvmm_power_state() -> None:
+    """Tests that generic vmInfo templates normalize invalid SCVMM power states."""
+    df_vm = pd.DataFrame({
+        "MachineId": ["VM-1", "VM-2", "VM-3"],
+        "MachineName": ["SRV-1", "SRV-2", "SRV-3"],
+        "TotalDiskAllocatedGiB": [100, 100, 100],
+        "TotalDiskUsedGiB": [50, 50, 50],
+        "AllocatedProcessorCoreCount": [4, 4, 4],
+        "MemoryGiB": [8, 8, 8],
+        "OsName": ["Windows Server 2019", "Windows Server 2019", "Ubuntu 22.04"],
+        "MachineStatus(optional)": ["Running", "Host Not Responding", "Missing"],
+        "IsPhysical": [0, 0, 0],
+    })
+    transformed = _transform_in_memory(df_vm, pd.DataFrame(), "hyperv", is_generic=True)
+    statuses = transformed["vms"]["MachineStatus(optional)"].tolist()
+    assert statuses == ["Running", "Stopped", "Stopped"]
+
+
+

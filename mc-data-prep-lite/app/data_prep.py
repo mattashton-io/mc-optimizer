@@ -136,6 +136,196 @@ def process_inventory_upload(file_dict: dict[str, pd.DataFrame]) -> pd.DataFrame
     return next(iter(file_dict.values()))
 
 
+DISK_INFO_REQUIRED_COLUMNS = [
+    "MachineId",
+    "DiskLabel",
+    "SizeInGib",
+    "UsedInGib",
+    "StorageTypeLabel",
+]
+
+_DISK_INFO_HEADER_MAP = {col.lower(): col for col in DISK_INFO_REQUIRED_COLUMNS}
+
+_VALID_MC_POWER_STATES = {
+    "",
+    "active",
+    "provisioning",
+    "on",
+    "powered on",
+    "poweredon",
+    "running",
+    "vm running",
+    "provisioning succeeded",
+    "suspending",
+    "suspended",
+    "off",
+    "powered off",
+    "poweredoff",
+    "stopped",
+    "user stopped",
+    "deleting",
+    "deallocating",
+    "deleted",
+    "deallocated",
+    "vm deallocated",
+}
+
+
+def validate_and_prepare_disk_info(
+    df_disks: pd.DataFrame,
+) -> tuple[pd.DataFrame, list[str], list[str]]:
+    """Validates and normalizes a diskInfo DataFrame against Migration Center manual CSV standards.
+
+    Returns:
+        A tuple of (cleaned_df, errors, warnings).
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if df_disks.empty:
+        return df_disks, ["Uploaded diskInfo.csv contains no rows."], warnings
+
+    df = df_disks.copy()
+    df.columns = [str(col).strip() for col in df.columns]
+
+    # Normalize case-insensitive header variants (e.g., SizeInGiB -> SizeInGib)
+    renamed_cols: dict[str, str] = {}
+    for col in df.columns:
+        canonical = _DISK_INFO_HEADER_MAP.get(col.lower())
+        if canonical and col != canonical:
+            renamed_cols[col] = canonical
+
+    if renamed_cols:
+        df = df.rename(columns=renamed_cols)
+        rename_desc = ", ".join(f"'{k}' -> '{v}'" for k, v in renamed_cols.items())
+        warnings.append(
+            f"Normalized column header casing to Migration Center standard: {rename_desc}."
+        )
+
+    missing_cols = [col for col in DISK_INFO_REQUIRED_COLUMNS if col not in df.columns]
+    if missing_cols:
+        errors.append(
+            f"Uploaded diskInfo.csv is missing required columns: {', '.join(missing_cols)}. "
+            f"Expected columns: {', '.join(DISK_INFO_REQUIRED_COLUMNS)}."
+        )
+        return df, errors, warnings
+
+    # 1. Validate MachineId (blocking, alphanumeric/underscore/hyphen only)
+    raw_machine_ids = df["MachineId"]
+    null_mid_mask = raw_machine_ids.isna() | (
+        raw_machine_ids.astype(str).str.strip() == ""
+    )
+    if null_mid_mask.any():
+        bad_rows = (df.index[null_mid_mask] + 2).tolist()[:5]
+        errors.append(
+            f"Column 'MachineId' contains {int(null_mid_mask.sum())} empty/null value(s) (e.g. CSV rows {bad_rows})."
+        )
+
+    mid_str = raw_machine_ids.fillna("").astype(str)
+    ws_mask = (~null_mid_mask) & (mid_str != mid_str.str.strip())
+    if ws_mask.any():
+        warnings.append(
+            f"Trimmed leading/trailing whitespace from {int(ws_mask.sum())} 'MachineId' value(s)."
+        )
+    df["MachineId"] = mid_str.str.strip()
+
+    invalid_uuid_mask = (~null_mid_mask) & (
+        ~df["MachineId"].str.match(r"^[a-zA-Z0-9_-]+$")
+    )
+    if invalid_uuid_mask.any():
+        bad_rows = (df.index[invalid_uuid_mask] + 2).tolist()[:5]
+        bad_vals = df.loc[invalid_uuid_mask, "MachineId"].head(3).tolist()
+        errors.append(
+            f"Column 'MachineId' has {int(invalid_uuid_mask.sum())} value(s) with invalid characters "
+            f"(must contain only alphanumeric characters, underscores, and hyphens; e.g. rows {bad_rows}: {bad_vals})."
+        )
+
+    # 2. Validate SizeInGib (required numeric float >= 0)
+    def _parse_float_series(series: pd.Series) -> pd.Series:
+        if pd.api.types.is_numeric_dtype(series):
+            return series.astype(float)
+        cleaned = (
+            series.astype(str)
+            .str.strip()
+            .str.replace(",", "", regex=False)
+            .str.replace('"', "", regex=False)
+        )
+        cleaned = cleaned.replace({"": np.nan, "nan": np.nan, "None": np.nan})
+        return pd.to_numeric(cleaned, errors="coerce")
+
+    size_num = _parse_float_series(df["SizeInGib"])
+    invalid_size_mask = size_num.isna()
+    if invalid_size_mask.any():
+        bad_rows = (df.index[invalid_size_mask] + 2).tolist()[:5]
+        errors.append(
+            f"Column 'SizeInGib' has {int(invalid_size_mask.sum())} missing or non-numeric value(s) (e.g. CSV rows {bad_rows})."
+        )
+
+    neg_size_mask = (~invalid_size_mask) & (size_num < 0)
+    if neg_size_mask.any():
+        bad_rows = (df.index[neg_size_mask] + 2).tolist()[:5]
+        errors.append(
+            f"Column 'SizeInGib' has {int(neg_size_mask.sum())} negative value(s) (must be non-negative; e.g. CSV rows {bad_rows})."
+        )
+
+    zero_size_mask = (~invalid_size_mask) & (size_num == 0)
+    if zero_size_mask.any():
+        zero_samples = [
+            f"{row.MachineId}/{row.DiskLabel}"
+            for _, row in df.loc[zero_size_mask, ["MachineId", "DiskLabel"]]
+            .head(5)
+            .iterrows()
+        ]
+        warnings.append(
+            f"{int(zero_size_mask.sum())} disk row(s) have SizeInGib == 0 (e.g. {', '.join(zero_samples)})."
+        )
+
+    df["SizeInGib"] = size_num
+
+    # 3. Validate UsedInGib (optional in Migration Center; when present must be >= 0 and <= SizeInGib)
+    raw_used = df["UsedInGib"]
+    empty_used_mask = raw_used.isna() | (raw_used.astype(str).str.strip() == "")
+    used_num = _parse_float_series(raw_used)
+
+    invalid_used_mask = (~empty_used_mask) & used_num.isna()
+    if invalid_used_mask.any():
+        bad_rows = (df.index[invalid_used_mask] + 2).tolist()[:5]
+        errors.append(
+            f"Column 'UsedInGib' has {int(invalid_used_mask.sum())} non-numeric value(s) (e.g. CSV rows {bad_rows})."
+        )
+
+    neg_used_mask = (~used_num.isna()) & (used_num < 0)
+    if neg_used_mask.any():
+        bad_rows = (df.index[neg_used_mask] + 2).tolist()[:5]
+        errors.append(
+            f"Column 'UsedInGib' has {int(neg_used_mask.sum())} negative value(s) (must be non-negative; e.g. CSV rows {bad_rows})."
+        )
+
+    exceeds_size_mask = (~used_num.isna()) & (~size_num.isna()) & (used_num > size_num)
+    if exceeds_size_mask.any():
+        bad_rows = (df.index[exceeds_size_mask] + 2).tolist()[:5]
+        errors.append(
+            f"Column 'UsedInGib' exceeds 'SizeInGib' on {int(exceeds_size_mask.sum())} row(s) "
+            f"(must be lower or equal to value in column 'SizeInGib'; e.g. CSV rows {bad_rows})."
+        )
+
+    zero_used_mask = (~used_num.isna()) & (used_num == 0) & (size_num > 0)
+    if zero_used_mask.any():
+        warnings.append(
+            f"{int(zero_used_mask.sum())} non-zero disk row(s) report UsedInGib == 0."
+        )
+
+    df["UsedInGib"] = used_num
+
+    # 4. Clean DiskLabel and StorageTypeLabel strings
+    df["DiskLabel"] = df["DiskLabel"].fillna("").astype(str).str.strip()
+    df["StorageTypeLabel"] = df["StorageTypeLabel"].fillna("").astype(str).str.strip()
+
+    # Ensure exact canonical column order (SizeInGib must precede UsedInGib for MC parser)
+    df = df[DISK_INFO_REQUIRED_COLUMNS]
+    return df, errors, warnings
+
+
 async def process_uploaded_infrastructure_file(
     artifact_id: str, format_type: str, tool_context: ToolContext
 ) -> str:
@@ -180,9 +370,10 @@ async def process_uploaded_infrastructure_file(
         # Detect structure
         is_generic_template = False
         is_tag_info = False
-        if artifact_id.lower().endswith(".csv"):
+        is_disk_info = False
+        if not is_excel:
             with io.BytesIO(file_bytes) as f:
-                header_line = f.readline().decode("utf-8").lower()
+                header_line = f.readline().decode("utf-8-sig", errors="replace").lower()
                 if "machineid" in header_line and "machinename" in header_line:
                     is_generic_template = True
                 elif (
@@ -191,6 +382,78 @@ async def process_uploaded_infrastructure_file(
                     and "value" in header_line
                 ):
                     is_tag_info = True
+                elif (
+                    "machineid" in header_line
+                    and ("disklabel" in header_line or "sizeingib" in header_line)
+                    and "machinename" not in header_line
+                ):
+                    is_disk_info = True
+
+        # Handle diskInfo.csv specially
+        if is_disk_info:
+            with io.BytesIO(file_bytes) as f:
+                try:
+                    df_disks_raw = pd.read_csv(f)
+                except Exception as e:
+                    return f"Error reading diskInfo CSV file: {e}"
+
+            cleaned_disks, errors, warnings = validate_and_prepare_disk_info(
+                df_disks_raw
+            )
+            if errors:
+                return (
+                    f"Error: diskInfo.csv failed Migration Center validation: "
+                    f"{' | '.join(errors)}"
+                )
+
+            # Optional cross-validation against staged vmInfo.csv if already loaded in session
+            try:
+                vm_part = await tool_context.load_artifact("vmInfo.csv")
+                if vm_part:
+                    vm_content = vm_part.text or (
+                        vm_part.inline_data.data.decode("utf-8")
+                        if vm_part.inline_data
+                        else ""
+                    )
+                    if vm_content:
+                        df_staged_vms = pd.read_csv(io.StringIO(vm_content))
+                        if "MachineId" in df_staged_vms.columns:
+                            vm_ids = set(
+                                df_staged_vms["MachineId"].astype(str).str.strip()
+                            )
+                            disk_vm_ids = set(cleaned_disks["MachineId"])
+                            unmatched_disk_vms = disk_vm_ids - vm_ids
+                            vms_without_disks = vm_ids - disk_vm_ids
+                            if unmatched_disk_vms:
+                                warnings.append(
+                                    f"{len(unmatched_disk_vms)} MachineId(s) in diskInfo.csv do not exist in staged vmInfo.csv."
+                                )
+                            if vms_without_disks:
+                                warnings.append(
+                                    f"{len(vms_without_disks)} VM(s) in staged vmInfo.csv have no disk rows in diskInfo.csv."
+                                )
+            except Exception:
+                pass
+
+            csv_content = cleaned_disks.to_csv(index=False)
+            await tool_context.save_artifact(
+                "diskInfo.csv", types.Part(text=csv_content)
+            )
+
+            total_disks = len(cleaned_disks)
+            unique_vms = int(cleaned_disks["MachineId"].nunique())
+            total_size_gib = float(cleaned_disks["SizeInGib"].sum())
+            total_used_gib = float(cleaned_disks["UsedInGib"].fillna(0).sum())
+
+            msg = (
+                f"Successfully validated and staged {total_disks} disk entries across "
+                f"{unique_vms} VMs in diskInfo.csv ({total_size_gib:,.2f} GiB allocated, "
+                f"{total_used_gib:,.2f} GiB used). "
+            )
+            if warnings:
+                msg += f"Validation notes: {'; '.join(warnings)} "
+            msg += "You can now run 'get_parsed_vms' to review or 'import_data_to_migration_center' to proceed."
+            return msg
 
         # Handle tagInfo.csv specially
         if is_tag_info:
@@ -429,6 +692,16 @@ def _transform_in_memory(
             return "Linux"
         return "Linux"
 
+    def normalize_mc_power_state(val):
+        if pd.isna(val):
+            return ""
+        raw = str(val).strip()
+        if raw.lower() in _VALID_MC_POWER_STATES:
+            return raw
+        if any(k in raw.lower() for k in ["run", "online", "active"]):
+            return "Running"
+        return "Stopped"
+
     vm_info = pd.DataFrame()
     disk_info = pd.DataFrame()
 
@@ -438,6 +711,10 @@ def _transform_in_memory(
             vm_info["OsType(optional)"] = vm_info["OsName"].apply(map_os_type)
         if "MachineTypeLabel(optional)" not in vm_info.columns:
             vm_info["MachineTypeLabel(optional)"] = f"{source_type.title()} VM"
+        if "MachineStatus(optional)" in vm_info.columns:
+            vm_info["MachineStatus(optional)"] = vm_info[
+                "MachineStatus(optional)"
+            ].apply(normalize_mc_power_state)
         disk_info = df_disk.copy()
 
     elif source_type == "vmware":

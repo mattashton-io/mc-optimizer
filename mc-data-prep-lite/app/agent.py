@@ -36,6 +36,7 @@ from .data_prep import (
 from .import_data import import_data_to_migration_center
 from .assign_groups import assign_assets_to_groups, list_migration_center_groups
 from .update_asset_labels import add_labels_post_import
+from .scan_environment import scan_migration_center_environment
 
 from .app_utils.project_utils import get_project_id
 
@@ -106,20 +107,24 @@ class ResilientGemini(Gemini):
 root_agent = Agent(
     name="root_agent",
     model=ResilientGemini(
-        model="gemini-2.5-flash",
+        model="gemini-3.8-flash",
         retry_options=types.HttpRetryOptions(attempts=3),
     ),
     instruction="""You are a GCP Migration Data Prep Agent. 
-Your goal is to help users prepare, tag, import, and group their on-premises workload data for Migration Center.
+Your goal is to help users prepare, tag, import, and group their on-premises workload data for Migration Center, as well as scan and inspect their current Migration Center environment.
+
+### Environment Scanning & High-Level Metrics
+- When a user asks to scan or check the current Migration Center environment, asks how many VMs/servers have been imported, or requests high-level metrics of their Migration Center inventory, call `scan_migration_center_environment`.
 
 ### Important: Handling Uploads
 When a user uploads a file, you might see a placeholder like `[Artifact Uploaded: filename.xlsx]`. 
 This indicates that the file was successfully uploaded to the chat session as an ADK Artifact.
 
 ### Generic Template Detection
-If a user uploads a .csv file that matches Migration Center manual upload templates (contains 'MachineId', 'MachineName'):
-1. **Ask the user** if the source Platform is: 1. Hyper-V 2. Nutanix 3. Proxmox 4. Other.
+If a user uploads a .csv file that matches Migration Center manual upload templates:
+1. If it is `vmInfo.csv` (contains 'MachineId', 'MachineName') and the source platform is not yet known, **ask the user** if the source Platform is: 1. Hyper-V 2. Nutanix 3. Proxmox 4. Other.
 2. Once identified, use `process_uploaded_infrastructure_file` with the appropriate `format_type`.
+3. If the user uploads a companion `diskInfo.csv` (contains 'MachineId', 'DiskLabel', 'SizeInGib', 'UsedInGib', 'StorageTypeLabel') or `tagInfo.csv` (contains 'MachineId', 'Key', 'Value'), call `process_uploaded_infrastructure_file` directly to validate and stage it alongside `vmInfo.csv`.
 
 ### Grouping and Labeling
 - **Grouping**: 
@@ -132,7 +137,7 @@ If a user uploads a .csv file that matches Migration Center manual upload templa
     - The tool automatically reads from the `staged_labels.csv` session artifact.
 
 ### Workflow:
-1. **Request Upload**: Ask the user to upload export files.
+1. **Request Upload**: Ask the user to upload export files (or scan the existing Migration Center environment using `scan_migration_center_environment` if requested).
 2. **Process**: Call `process_uploaded_infrastructure_file`.
 3. **Review**: Use `get_parsed_vms` to list VMs.
 4. **Import**: Use `import_data_to_migration_center`.
@@ -143,6 +148,7 @@ If a user uploads a .csv file that matches Migration Center manual upload templa
 - Do NOT save uploaded files to local disk.
 - Do NOT use `tagInfo.csv` for post-import labeling; use the native API tool.""",
     tools=[
+        scan_migration_center_environment,
         process_uploaded_infrastructure_file,
         get_parsed_vms,
         import_data_to_migration_center,

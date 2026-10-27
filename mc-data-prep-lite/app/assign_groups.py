@@ -177,11 +177,23 @@ async def assign_assets_to_groups(
                 asset_id = asset.name.split("/")[-1].lower().strip()
 
                 vm_details = getattr(asset, "virtual_machine_details", None)
+                md = getattr(asset, "machine_details", None)
                 vm_name = ""
                 bios_uuid = ""
                 if vm_details:
-                    vm_name = (getattr(vm_details, "vm_name", "") or "").lower().strip()
-                    bios_uuid = (getattr(vm_details, "bios_uuid", "") or "").lower().strip()
+                    raw_vm_name = getattr(vm_details, "vm_name", "")
+                    raw_uuid = getattr(vm_details, "bios_uuid", "")
+                    if isinstance(raw_vm_name, str) and raw_vm_name:
+                        vm_name = raw_vm_name.lower().strip()
+                    if isinstance(raw_uuid, str) and raw_uuid:
+                        bios_uuid = raw_uuid.lower().strip()
+                if md:
+                    raw_md_name = getattr(md, "machine_name", "")
+                    raw_md_uuid = getattr(md, "uuid", "")
+                    if not vm_name and isinstance(raw_md_name, str) and raw_md_name:
+                        vm_name = raw_md_name.lower().strip()
+                    if not bios_uuid and isinstance(raw_md_uuid, str) and raw_md_uuid:
+                        bios_uuid = raw_md_uuid.lower().strip()
 
                 if (
                     aid_clean == asset_id
