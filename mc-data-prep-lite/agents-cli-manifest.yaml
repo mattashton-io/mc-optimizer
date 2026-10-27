@@ -1,5 +1,5 @@
 name: mc-data-prep-lite
-acli_version: 0.4.0
+acli_version: 1.3.1
 agent_directory: app
 region: us-central1
 base_template: adk
@@ -7,7 +7,7 @@ generated_at: '2026-06-14T17:21:08.242093+00:00'
 language: python
 create_params:
   deployment_target: agent_runtime
-  cicd_runner: skip
+  cicd_runner: google_cloud_build
   include_data_ingestion: false
   datastore: none
   agent_guidance_filename: GEMINI.md
